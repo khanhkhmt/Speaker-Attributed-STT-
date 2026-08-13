@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Speaker-Attributed STT — demo console</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117; --panel: #161b22; --line: #262d38; --ink: #e6edf3;
+    --muted: #8b949e; --accent: #58a6ff; --warn: #d29922; --bad: #f85149; --ok: #3fb950;
+    --spk1: #58a6ff; --spk2: #bc8cff; --spk3: #3fb950; --spk4: #f0883e; --spk5: #ff7b9c;
+    --tmp: #8b949e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  h1 { font-size: 16px; margin: 0; font-weight: 650; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .banner { margin: 0; padding: 10px 20px; background: #2b2200; color: #f0d68a;
+    border-bottom: 1px solid #4a3a00; font-size: 13px; }
+  main { display: grid; grid-template-columns: 300px 1fr; gap: 0; min-height: calc(100vh - 100px); }
+  aside { border-right: 1px solid var(--line); padding: 16px 18px; }
+  section { padding: 16px 20px; overflow-x: auto; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 5px; }
+  select, button { font: inherit; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); padding: 7px 10px; }
+  button { cursor: pointer; width: 100%; margin-top: 8px; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; }
+  select { width: 100%; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; margin: 0 0 10px; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .lane { position: relative; height: 30px; margin-bottom: 5px; }
+  .lane-label { position: absolute; left: 0; top: 0; width: 130px; font-size: 12px;
+    color: var(--muted); line-height: 30px; white-space: nowrap; overflow: hidden; }
+  .track { position: absolute; left: 138px; right: 0; top: 0; height: 30px;
+    background: #10151d; border-radius: 4px; }
+  .seg { position: absolute; top: 3px; height: 24px; border-radius: 4px; font-size: 11px;
+    line-height: 24px; padding: 0 6px; overflow: hidden; white-space: nowrap;
+    color: #0d1117; font-weight: 600; }
+  .seg.prov { opacity: .55; border: 1px dashed rgba(255,255,255,.6); }
+  .ruler { position: relative; height: 18px; margin: 0 0 6px 138px; color: var(--muted);
+    font-size: 11px; border-top: 1px solid var(--line); }
+  .ruler span { position: absolute; top: 2px; transform: translateX(-50%); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line);
+    vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .05em; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+    border: 1px solid var(--line); color: var(--muted); margin-right: 4px; }
+  .pill.ov { border-color: #6e4a00; color: var(--warn); }
+  .pill.null { border-color: #30363d; }
+  .log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    max-height: 320px; overflow-y: auto; }
+  .log div { padding: 2px 0; border-bottom: 1px solid #1c2229; }
+  .log .final { color: var(--ok); } .log .rev { color: var(--accent); }
+  .log .warn { color: var(--warn); } .log .prov { color: var(--muted); }
+  .empty { color: var(--muted); padding: 30px 0; text-align: center; }
+  code { background: #0b0f14; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Speaker-Attributed STT — demo console</h1>
+  <span class="sub" id="envline">đang tải…</span>
+</header>
+<p class="banner" id="banner">…</p>
+
+<main>
+  <aside>
+    <div class="card">
+      <h2>Kịch bản</h2>
+      <label for="scenario">Chọn phiên</label>
+      <select id="scenario"></select>
+      <label for="speed">Tốc độ stream</label>
+      <select id="speed">
+        <option value="1">1× (thời gian thực)</option>
+        <option value="4" selected>4× (nhanh)</option>
+        <option value="0">Tức thì</option>
+      </select>
+      <button id="run-offline" class="primary">Chạy job offline</button>
+      <button id="run-stream">Chạy near-realtime</button>
+      <button id="test-resume" disabled>Test reconnect / replay</button>
+    </div>
+    <div class="card">
+      <h2>Phiên hiện tại</h2>
+      <dl class="kv" id="meta"><dt>trạng thái</dt><dd>chưa chạy</dd></dl>
+    </div>
+    <div class="card">
+      <h2>Model versions</h2>
+      <dl class="kv" id="models"><dt>—</dt><dd>—</dd></dl>
+    </div>
+  </aside>
+
+  <section>
+    <div class="card">
+      <h2>Timeline theo người nói</h2>
+      <div id="timeline"><p class="empty">Chọn một kịch bản rồi bấm chạy.</p></div>
+    </div>
+
+    <div class="card">
+      <h2>Transcript</h2>
+      <table>
+        <thead><tr>
+          <th style="width:130px">thời gian</th><th style="width:170px">người nói</th>
+          <th>nội dung</th><th style="width:210px">metadata</th>
+        </tr></thead>
+        <tbody id="segments"><tr><td colspan="4" class="empty">chưa có dữ liệu</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="events-card" hidden>
+      <h2>Event stream (spec 8.2)</h2>
+      <div class="log" id="events"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const SPK_COLORS = ["var(--spk1)","var(--spk2)","var(--spk3)","var(--spk4)","var(--spk5)"];
+let speakerColor = new Map();
+let currentSession = null;
+let lastSeq = 0;
+
+function colorFor(id) {
+  if (!speakerColor.has(id)) {
+    const label = String(id);
+    const color = label.startsWith("tmp") ? "var(--tmp)" : SPK_COLORS[speakerColor.size % 5];
+    speakerColor.set(id, color);
+  }
+  return speakerColor.get(id);
+}
+const fmt = (ms) => `${String(Math.floor(ms/60000)).padStart(2,"0")}:` +
+  `${String(Math.floor(ms/1000)%60).padStart(2,"0")}.${String(ms%1000).padStart(3,"0")}`;
+
+async function boot() {
+  const ready = await (await fetch("/readyz")).json();
+  $("envline").textContent =
+    `engine=${ready.engine} · env=${ready.environment} · ${ready.config_version} · ` +
+    `tối đa ${ready.max_session_speakers} người/phiên, ${ready.max_supported_concurrent_speakers} người nói đồng thời`;
+  const pinned = ready.models.filter(m => m.pinned).length;
+  $("banner").innerHTML = ready.engine === "fake"
+    ? `<b>Engine = fake (Milestone 0).</b> Kết quả chỉ chứng minh <i>cấu trúc</i> pipeline: định tuyến overlap,
+       tách nguồn, gán người nói, revision. Đây <b>không phải</b> kết quả model thật và không dùng để đánh giá
+       độ chính xác (spec 19.1, 18 rule 6). Weights đã pin: ${pinned}/${ready.models.length}.`
+    : `<b>Engine = ${ready.engine}.</b> Weights đã pin: ${pinned}/${ready.models.length}.`;
+
+  const list = (await (await fetch("/v1/demo/scenarios")).json()).scenarios;
+  $("scenario").innerHTML = list.map(s =>
+    `<option value="${s.name}">${s.title} — ${s.speakers.length} người, ${(s.duration_ms/1000).toFixed(0)}s, ${s.overlap_regions} vùng chồng lấn</option>`
+  ).join("");
+}
+
+function setMeta(pairs) {
+  $("meta").innerHTML = Object.entries(pairs)
+    .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+}
+function setModels(versions) {
+  $("models").innerHTML = Object.entries(versions || {})
+    .map(([k, v]) => `<dt>${k}</dt><dd>${v ?? "<span class='pill null'>null</span>"}</dd>`).join("");
+}
+
+function renderTimeline(segments) {
+  const box = $("timeline");
+  if (!segments.length) { box.innerHTML = `<p class="empty">chưa có segment</p>`; return; }
+  const total = Math.max(...segments.map(s => s.end_ms));
+  const lanes = [...new Map(segments.map(s => [s.session_speaker_id, s])).keys()];
+  let html = `<div class="ruler">` + Array.from({length: 6}, (_, i) => {
+    const ms = Math.round(total * i / 5);
+    return `<span style="left:${(i/5*100).toFixed(2)}%">${fmt(ms)}</span>`;
+  }).join("") + `</div>`;
+  for (const lane of lanes) {
+    const mine = segments.filter(s => s.session_speaker_id === lane);
+    const label = mine[0].speaker_label || lane;
+    html += `<div class="lane"><div class="lane-label" title="${lane}">${label}</div><div class="track">`;
+    for (const s of mine) {
+      const left = (s.start_ms / total * 100).toFixed(3);
+      const width = Math.max(0.6, (s.end_ms - s.start_ms) / total * 100).toFixed(3);
+      const cls = s.is_final ? "seg" : "seg prov";
+      html += `<div class="${cls}" style="left:${left}%;width:${width}%;background:${colorFor(lane)}"
+                title="${fmt(s.start_ms)}–${fmt(s.end_ms)} ${s.text}">${s.is_overlap ? "⧉ " : ""}${s.text}</div>`;
+    }
+    html += `</div></div>`;
+  }
+  box.innerHTML = html;
+}
+
+function renderSegments(segments) {
+  const body = $("segments");
+  if (!segments.length) { body.innerHTML = `<tr><td colspan="4" class="empty">chưa có dữ liệu</td></tr>`; return; }
+  body.innerHTML = segments.map(s => {
+    const pills = [
+      `<span class="pill">${s.identity_status}</span>`,
+      s.is_overlap ? `<span class="pill ov">overlap${s.source_track !== null ? " · track " + s.source_track : ""}</span>` : "",
+      s.degraded_mode ? `<span class="pill ov">degraded</span>` : "",
+      `<span class="pill null">conf: ${s.confidence_status}</span>`,
+      ...(s.quality_flags || []).map(f => `<span class="pill ov">${f}</span>`),
+    ].join("");
+    return `<tr>
+      <td class="num">${fmt(s.start_ms)}<br>${fmt(s.end_ms)}</td>
+      <td><span style="color:${colorFor(s.session_speaker_id)};font-weight:600">${s.speaker_label || s.session_speaker_id}</span>
+          <div class="num" style="font-size:11px">${s.speaker_id}</div></td>
+      <td>${s.text}</td>
+      <td>${pills}</td>
+    </tr>`;
+  }).join("");
+}
+
+function logEvent(event) {
+  const cls = { "transcript.final": "final", "transcript.revision": "rev",
+                "pipeline.warning": "warn", "transcript.provisional": "prov" }[event.type] || "";
+  const p = event.payload || {};
+  let detail = "";
+  if (p.text !== undefined) detail = `${fmt(p.start_ms)} ${p.speaker_label} · "${p.text}"`;
+  else if (p.previous_label) detail = `${p.previous_label} → ${p.speaker_label} (${p.reason})`;
+  else detail = JSON.stringify(p).slice(0, 110);
+  const sup = event.supersedes_event_id ? ` ⟵ thay thế ${event.supersedes_event_id.slice(-6)}` : "";
+  const row = document.createElement("div");
+  row.className = cls;
+  row.textContent = `#${event.sequence_number} ${event.type} rev=${event.revision} ${detail}${sup}`;
+  $("events").appendChild(row);
+  $("events").scrollTop = $("events").scrollHeight;
+}
+
+async function runOffline() {
+  const scenario = $("scenario").value;
+  speakerColor = new Map();
+  $("events-card").hidden = true;
+  setMeta({ "chế độ": "offline job", "kịch bản": scenario, "trạng thái": "đang chạy…" });
+
+  const created = await (await fetch("/v1/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": `demo-${scenario}-${Date.now()}` },
+    body: JSON.stringify({ scenario }),
+  })).json();
+
+  const result = await (await fetch(`/v1/jobs/${created.job_id}/result`)).json();
+  setMeta({
+    "chế độ": "offline job", "job": created.job_id.slice(0, 18) + "…",
+    "trạng thái": result.state, "người trong phiên": result.estimated_session_speakers,
+    "segment": result.segments.length,
+    "cảnh báo": result.warnings.length ? result.warnings.join(", ") : "—",
+    "degraded": result.degraded_mode ? "có" : "không",
+  });
+  setModels(result.model_versions);
+  renderTimeline(result.segments);
+  renderSegments(result.segments);
+}
+
+async function runStream() {
+  const scenario = $("scenario").value;
+  speakerColor = new Map();
+  $("events").innerHTML = ""; $("events-card").hidden = false;
+  $("run-stream").disabled = true; $("run-offline").disabled = true;
+  setMeta({ "chế độ": "near-realtime", "kịch bản": scenario, "trạng thái": "đang mở session…" });
+
+  const session = await (await fetch("/v1/sessions", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scenario }),
+  })).json();
+  currentSession = session.session_id;
+  lastSeq = 0;
+
+  const wav = await (await fetch(`/v1/demo/scenarios/${scenario}/audio.wav`)).arrayBuffer();
+  const pcm = new Uint8Array(wav.slice(44));            // 16-bit mono 16 kHz
+  const frameBytes = session.frame_ms * session.sample_rate / 1000 * 2;
+  const speed = Number($("speed").value);
+
+  const segments = new Map();
+  const socket = new WebSocket(`ws://${location.host}${session.websocket_url}`);
+  socket.binaryType = "arraybuffer";
+
+  socket.onmessage = (message) => {
+    const event = JSON.parse(message.data);
+    lastSeq = Math.max(lastSeq, event.sequence_number || 0);
+    logEvent(event);
+    const p = event.payload || {};
+    if (event.type === "transcript.provisional" || event.type === "transcript.final") {
+      if (event.supersedes_event_id) segments.delete(event.supersedes_event_id);
+      segments.set(p.event_id, p);
+      renderTimeline([...segments.values()]);
+      renderSegments([...segments.values()]);
+    }
+    if (event.type === "session.finalized") {
+      setMeta({ "chế độ": "near-realtime", "session": currentSession.slice(0, 18) + "…",
+                "trạng thái": "đã finalize", "event": lastSeq, "segment": segments.size });
+      $("run-stream").disabled = false; $("run-offline").disabled = false;
+      $("test-resume").disabled = false;
+    }
+  };
+
+  socket.onopen = async () => {
+    setMeta({ "chế độ": "near-realtime", "session": currentSession.slice(0, 18) + "…",
+              "trạng thái": "đang stream…" });
+    for (let offset = 0; offset < pcm.length; offset += frameBytes) {
+      socket.send(pcm.slice(offset, offset + frameBytes));
+      if (speed > 0) await new Promise(r => setTimeout(r, session.frame_ms / speed));
+    }
+    socket.send(JSON.stringify({ type: "finalize" }));
+  };
+}
+
+async function testResume() {
+  if (!currentSession) return;
+  const from = Math.max(0, lastSeq - 4);
+  const row = document.createElement("div");
+  row.className = "rev";
+  row.textContent = `--- reconnect: resume từ sequence ${from} ---`;
+  $("events").appendChild(row);
+
+  const socket = new WebSocket(`ws://${location.host}/v1/sessions/${currentSession}/audio`);
+  socket.onopen = () => socket.send(JSON.stringify({ type: "resume", last_sequence_number: from }));
+  let replayed = 0, finals = 0;
+  socket.onmessage = (m) => {
+    const event = JSON.parse(m.data);
+    replayed++; if (event.is_final) finals++;
+    logEvent(event);
+  };
+  setTimeout(() => {
+    const done = document.createElement("div");
+    done.className = "final";
+    done.textContent = `--- replay xong: ${replayed} event (${finals} final), không có final trùng ---`;
+    $("events").appendChild(done);
+    socket.close();
+  }, 700);
+}
+
+$("run-offline").onclick = () => runOffline().catch(e => alert(e));
+$("run-stream").onclick = () => runStream().catch(e => alert(e));
+$("test-resume").onclick = () => testResume().catch(e => alert(e));
+boot();
+</script>
+</body>
+</html>

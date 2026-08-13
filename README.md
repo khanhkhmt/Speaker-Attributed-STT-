@@ -52,6 +52,24 @@ tests/              unit/ contract/ integration/ model/ load/
 `ports/audio.py` and `ports/fusion.py` extend the spec 17 tree because spec 9 mandates
 `AudioDecoder`, `ConfidenceCalibrator` and `FusionEngine` as ports as well.
 
+## Chạy thử / demo console
+
+```bash
+pip install -e ".[dev,api]"
+uvicorn --factory sastt.api.http:create_app --app-dir src --port 8000
+# mở http://localhost:8000
+```
+
+The console runs the built-in scenarios through the real pipeline and shows the
+speaker timeline, the transcript with its metadata, and — in realtime mode — the
+spec 8.2 event stream with provisional → revision → final and reconnect replay.
+
+`web/` and the `/v1/demo/*` routes are a development aid, not part of the product
+spec. The console states the active engine on every page: with the Milestone 0
+`fake` engine the output demonstrates pipeline **structure** only and is never a
+model result (spec 18 rule 6, 19.1). Uploading real audio returns
+`MODEL_NOT_READY` until the Milestone 1 adapters land, rather than pretending.
+
 ## Development
 
 ```bash
