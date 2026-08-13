@@ -158,12 +158,16 @@ class PyannoteOverlapDetector:
 
         try:
             model = Model.from_pretrained(str(self.model_path))
+            if model is None:
+                raise ModelNotReadyError(
+                    f"segmentation model could not be constructed from {self.model_path}"
+                )
             if torch.cuda.is_available():
                 model.to(torch.device("cuda"))
             self._inference = Inference(model, skip_aggregation=False)
-            specifications = model.specifications
+            specifications: Any = model.specifications
             self._powerset = Powerset(
-                len(specifications.classes), specifications.powerset_max_classes
+                int(len(specifications.classes)), int(specifications.powerset_max_classes)
             )
             # Hysteresis of spec 5.2: onset 0.60 / offset 0.50, minimum duration
             # 0.30 s, merge gap 0.20 s. Seed values, not calibrated thresholds.
@@ -197,7 +201,7 @@ class PyannoteOverlapDetector:
             import torch
             from pyannote.core import SlidingWindowFeature
 
-            scores = self._inference(_as_torch_input(buffer))
+            scores: Any = self._inference(_as_torch_input(buffer))
             powerset = torch.from_numpy(scores.data).unsqueeze(0)
             multilabel = self._powerset.to_multilabel(powerset, soft=True)
             overlap = multilabel.sum(dim=-1).squeeze(0).clamp(0.0, 2.0) - 1.0

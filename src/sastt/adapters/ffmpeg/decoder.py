@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +39,19 @@ from sastt.domain.errors import (
 from sastt.observability import CallContext
 
 DEFAULT_MAX_BYTES = 2 * 1024**3
+
+
+@dataclass(frozen=True)
+class _Probe:
+    """What ffprobe reports about the input stream."""
+
+    channels: int
+    sample_rate: int
+    codec_name: str
+    format_name: str
+    channel_layout: tuple[str, ...]
+
+
 DEFAULT_DECODE_TIMEOUT_SECONDS = 300.0
 
 
@@ -81,28 +95,28 @@ class FfmpegAudioDecoder:
             handle.flush()
             path = Path(handle.name)
             probe = self._probe(path)
-            samples = self._decode(path, probe["channels"], probe["sample_rate"])
+            samples = self._decode(path, probe.channels, probe.sample_rate)
 
         original = AudioBuffer(
             samples=samples,
-            sample_rate=probe["sample_rate"],
+            sample_rate=probe.sample_rate,
             start_sample=0,
-            channel_layout=probe["channel_layout"],
-            source_clock_hz=probe["sample_rate"],
+            channel_layout=probe.channel_layout,
+            source_clock_hz=probe.sample_rate,
         )
         mono = _to_canonical_mono(original)
         return AudioAsset(
             original=original,
             mono_16k=mono,
             input_sha256=sha256_of_bytes(payload),
-            container_format=container_hint or probe["format_name"],
+            container_format=container_hint or probe.format_name,
             quality=measure_quality(mono),
-            channel_map=probe["channel_layout"],
+            channel_map=probe.channel_layout,
         )
 
     # -- internals ------------------------------------------------------------ #
 
-    def _probe(self, path: Path) -> dict[str, object]:
+    def _probe(self, path: Path) -> _Probe:
         command = [
             self.ffprobe,
             "-v",
@@ -157,13 +171,13 @@ class FfmpegAudioDecoder:
             )
 
         layout = str(stream.get("channel_layout") or "")
-        return {
-            "channels": channels,
-            "sample_rate": sample_rate,
-            "codec_name": str(stream.get("codec_name") or "unknown"),
-            "format_name": str((report.get("format") or {}).get("format_name") or "unknown"),
-            "channel_layout": _channel_names(channels, layout),
-        }
+        return _Probe(
+            channels=channels,
+            sample_rate=sample_rate,
+            codec_name=str(stream.get("codec_name") or "unknown"),
+            format_name=str((report.get("format") or {}).get("format_name") or "unknown"),
+            channel_layout=_channel_names(channels, layout),
+        )
 
     def _decode(self, path: Path, channels: int, sample_rate: int) -> FloatArray:
         command = [
