@@ -51,7 +51,7 @@ branch = true
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-src = ["src", "tests"]
+src = ["src", "tests", "deploy"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "RET", "TID", "PTH", "N"]
@@ -62,12 +62,12 @@ ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.10"
-files = ["src/sastt"]
+files = ["src/sastt", "deploy"]
 strict = true
 plugins = ["pydantic.mypy"]
 disallow_any_generics = true
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["scipy.*", "yaml.*", "jsonschema.*"]
+module = ["scipy.*", "yaml.*", "jsonschema.*", "modelscope.*", "huggingface_hub.*"]
 ignore_missing_imports = true

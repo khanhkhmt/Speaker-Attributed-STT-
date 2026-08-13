@@ -1,6 +1,8 @@
 component: target_extraction
 backend: wesep
 repository: https://github.com/wenet-e2e/wesep
+source: none
+repo_id: null
 revision: null
 sha256: null
 code_license: Apache-2.0

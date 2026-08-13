@@ -1,0 +1,55 @@
+component: asr_final
+backend: faster_whisper_large_v3
+repository: https://huggingface.co/Systran/faster-whisper-large-v3
+source: huggingface
+repo_id: Systran/faster-whisper-large-v3
+revision: edaa852ec7e145841d8ffdb056a99866b5f0a478
+sha256: 73204fd831afd851cb18ff57f7870a1bb943f8fd06f519cd3739118b397fdd7e
+code_license: MIT
+weight_license: MIT
+training_data_caveat: Optional offline final rescore (spec 0.2, 5.5). Only active
+  when asr.final_rescore is enabled; spec 21.6 leaves turbo vs large-v3 to benchmark.
+production_action: production_candidate
+enabled: true
+benchmark_pending: true
+local_path: /models/faster-whisper-large-v3
+files:
+- path: .cache/huggingface/.gitignore
+  sha256: 684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1
+  size_bytes: 1
+- path: .cache/huggingface/CACHEDIR.TAG
+  sha256: f6572428f6d5e1575e73a1502895a8731f10757dfbb634909c6e154b849af91d
+  size_bytes: 191
+- path: .cache/huggingface/download/config.json.metadata
+  sha256: 3d9b2c007b0045984839e52a7edde08aef37e866c2a1bee35cf1c3724b54fb26
+  size_bytes: 100
+- path: .cache/huggingface/download/model.bin.metadata
+  sha256: 535c55760a227b315c663222d1839b8282ea50df3507974b6125208701c2e69f
+  size_bytes: 125
+- path: .cache/huggingface/download/preprocessor_config.json.metadata
+  sha256: 2daf1c58cea978424db6e84272edfb6e92ab83c11125b5fe8ecfd30fb8e941b3
+  size_bytes: 101
+- path: .cache/huggingface/download/tokenizer.json.metadata
+  sha256: 778da8325456f49df3c9840652930838728ce53271f0c89cdd3054ebcf75f2f4
+  size_bytes: 101
+- path: .cache/huggingface/download/vocabulary.json.metadata
+  sha256: 24371817b2d2485cb668aa4a88d0c1de2de722216d78d0fa78d35bdf51aed063
+  size_bytes: 100
+- path: .cache/huggingface/trees/edaa852ec7e145841d8ffdb056a99866b5f0a478.json
+  sha256: 22bab2899595f3ce8d9c827320c2db3ff23fd85d2006e4f6944324b1a9feb46b
+  size_bytes: 950
+- path: config.json
+  sha256: a9306624f5ec14270a014b647e5c316b6e03a662c369758d1b90697a7b0655b9
+  size_bytes: 2394
+- path: model.bin
+  sha256: 69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1
+  size_bytes: 3087284237
+- path: preprocessor_config.json
+  sha256: 7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711
+  size_bytes: 340
+- path: tokenizer.json
+  sha256: 6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca
+  size_bytes: 2480617
+- path: vocabulary.json
+  sha256: c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1
+  size_bytes: 1068114

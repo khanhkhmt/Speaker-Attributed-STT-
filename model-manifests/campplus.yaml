@@ -1,12 +1,39 @@
 component: speaker_embedding
 backend: 3d_speaker_campplus
-repository: https://github.com/modelscope/3D-Speaker
-revision: null
-sha256: null
+repository: https://modelscope.cn/models/iic/speech_campplus_sv_zh_en_16k-common_advanced
+source: modelscope
+repo_id: iic/speech_campplus_sv_zh_en_16k-common_advanced
+revision: v1.0.0
+sha256: 468ac57d69a43d0958936cefd288565bb6de659d935f04b90e24aa0dc4af2e7b
 code_license: Apache-2.0
 weight_license: Apache-2.0
-training_data_caveat: >-
-  Code is Apache-2.0; the exact weight card/revision must be recorded per checkpoint
-  before production use (spec 20).
+training_data_caveat: 3D-Speaker CAM++ 16 kHz (spec 0.2). The zh+en checkpoint is
+  chosen over the zh-cn-only one because sessions are Vietnamese with English code-switching;
+  neither is trained on Vietnamese, so CAM++ vs ERes2NetV2 and this exact checkpoint
+  stay open until the benchmark of spec 21.2.
 production_action: allow
 enabled: true
+benchmark_pending: true
+local_path: /models/campplus
+files:
+- path: campplus_cn_en_common.pt
+  sha256: 92f29b94e6948786a26778c9e302525d185bb08c8b9f5252ed98776902840199
+  size_bytes: 28044640
+- path: config.yaml
+  sha256: 17342041bd5b22f6fd7e32f6e7a267b0bf65f018c0a721bada6547e3d28fbfc9
+  size_bytes: 537
+- path: configuration.json
+  sha256: d1ae364ff71e84ef5918ba30b0f8c2f28d2fdfdac4003b60ce0877b3f4630048
+  size_bytes: 587
+- path: examples/speaker1_a_cn_16k.wav
+  sha256: 5f20ce0ddc378ca3239d3ce864b1142726a46a1221ae553912e4e142045df58b
+  size_bytes: 118932
+- path: examples/speaker1_b_cn_16k.wav
+  sha256: 20745dc08a4281894d146140b99b9ef7417ac681119b7f7202f553cdf1a85f65
+  size_bytes: 157058
+- path: examples/speaker2_a_cn_16k.wav
+  sha256: 8a6cffa452df32ef10503f7992f22ffcdd7f16c4e0273d13311bc5cdcb13abf4
+  size_bytes: 170028
+- path: quickstart.md
+  sha256: bda6b2ef6a1ade416be8d5149dbf3745b7d6e19ff4d72e03d028e7405fd63769
+  size_bytes: 1570

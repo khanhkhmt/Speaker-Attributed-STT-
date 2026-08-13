@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
@@ -289,24 +290,63 @@ class SasttConfig(_Base):
         return "cfg_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+class ModelFile(_Base):
+    """One weight file with its digest — the ``file hash`` of spec 11.2."""
+
+    path: str
+    sha256: str
+    size_bytes: int = 0
+
+
+def aggregate_sha256(files: Sequence[ModelFile]) -> str:
+    """Digest over ``path:sha256`` pairs, stable regardless of download order."""
+    digest = hashlib.sha256()
+    for entry in sorted(files, key=lambda item: item.path):
+        digest.update(f"{entry.path}:{entry.sha256}\n".encode())
+    return digest.hexdigest()
+
+
 class ModelManifest(_Base):
-    """Model release manifest — spec 11.2 and the licence gate of spec 20."""
+    """Model release manifest — spec 11.2 and the licence gate of spec 20.
+
+    Licence review covers three independent layers (spec 20): source code,
+    model weights and training data. ``revision``/``sha256`` stay ``null`` until
+    the weights are pre-staged, and production refuses to start on an unpinned
+    backend.
+    """
 
     component: str
     backend: str
     repository: str
+    source: Literal["huggingface", "modelscope", "none"] = "huggingface"
+    repo_id: str | None = None
     revision: str | None = None
     sha256: str | None = None
+    files: tuple[ModelFile, ...] = ()
+    local_path: str | None = None
     code_license: str
     weight_license: str
     training_data_caveat: str | None = None
+    terms_accepted_by: str | None = None
+    attribution: str | None = None
     production_action: ProductionAction
     enabled: bool = True
     requires_flag: str | None = None
+    benchmark_pending: bool = False
 
     @property
     def release_id(self) -> str:
         return f"{self.backend}@{self.revision or self.sha256 or 'unpinned'}"
+
+    @property
+    def is_pinned(self) -> bool:
+        return bool(self.revision or self.sha256)
+
+    def verify_digest(self) -> bool:
+        """Do the recorded per-file digests still add up to ``sha256``?"""
+        if not self.files or not self.sha256:
+            return False
+        return aggregate_sha256(self.files) == self.sha256
 
 
 def load_manifests(directory: Path = DEFAULT_MANIFEST_DIR) -> dict[str, ModelManifest]:
@@ -342,6 +382,8 @@ def _active_backends(config: SasttConfig) -> list[tuple[str, str]]:
     ]
     if config.overlap_detection.model_path:
         active.append(("overlap_detection", "pyannote_segmentation_3.0"))
+    if config.asr.final_rescore:
+        active.append(("asr_final", "faster_whisper_large_v3"))
     if config.product.three_source_beta:
         active.append(("separation_three_source", config.separation.three_source_backend))
     if config.product.mono_four_five_source_research:
@@ -485,6 +527,7 @@ __all__ = [
     "ConfidenceConfig",
     "DiarizationConfig",
     "Environment",
+    "ModelFile",
     "ModelManifest",
     "OverlapDetectionConfig",
     "ProductConfig",
@@ -497,6 +540,7 @@ __all__ = [
     "StreamingConfig",
     "VoiceIdConfig",
     "load_config",
+    "aggregate_sha256",
     "load_manifests",
     "validate_for_environment",
 ]

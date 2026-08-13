@@ -1,6 +1,8 @@
 component: separation_multichannel
 backend: gpu_gss
 repository: https://github.com/desh2608/gss
+source: none
+repo_id: null
 revision: null
 sha256: null
 code_license: MIT

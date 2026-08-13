@@ -1,6 +1,8 @@
 component: separation_research
 backend: multidecoder_dprnn
 repository: https://huggingface.co/JunzheJosephZhu/MultiDecoderDPRNN
+source: huggingface
+repo_id: JunzheJosephZhu/MultiDecoderDPRNN
 revision: null
 sha256: null
 code_license: MIT

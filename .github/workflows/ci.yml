@@ -35,8 +35,8 @@ jobs:
 
       - name: Lint (ruff)
         run: |
-          ruff check src tests
-          ruff format --check src tests
+          ruff check src tests deploy
+          ruff format --check src tests deploy
 
       - name: Type check (mypy strict)
         run: mypy

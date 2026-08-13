@@ -1,12 +1,16 @@
 component: overlap_detection
 backend: pyannote_segmentation_3.0
 repository: https://huggingface.co/pyannote/segmentation-3.0
+source: huggingface
+repo_id: pyannote/segmentation-3.0
 revision: null
 sha256: null
 code_license: MIT
 weight_license: MIT
 training_data_caveat: >-
-  Gated model. Input 10 s / 16 kHz, max_speakers_per_frame=2, therefore usable for
-  overlap detection only and never as a K=3-5 counter (spec 5.2, 20).
+  Gated model. Input 10 s / 16 kHz with max_speakers_per_frame=2, so it is usable
+  for overlap detection only and never as a K=3-5 counter (spec 5.2, 20).
+terms_accepted_by: huggingface:khanh99
+attribution: pyannote/segmentation-3.0, MIT.
 production_action: allow
 enabled: true

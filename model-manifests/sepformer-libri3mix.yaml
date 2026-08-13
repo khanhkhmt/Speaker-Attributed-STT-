@@ -1,6 +1,8 @@
 component: separation_three_source
 backend: sepformer_libri3mix
 repository: https://huggingface.co/speechbrain/sepformer-libri3mix
+source: huggingface
+repo_id: speechbrain/sepformer-libri3mix
 revision: null
 sha256: null
 code_license: Apache-2.0

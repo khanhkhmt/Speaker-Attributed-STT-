@@ -1,12 +1,38 @@
 component: separation_two_source
 backend: mossformer2_ss_16k
-repository: https://github.com/modelscope/ClearerVoice-Studio
-revision: null
-sha256: null
+repository: https://huggingface.co/alibabasglab/MossFormer2_SS_16K
+source: huggingface
+repo_id: alibabasglab/MossFormer2_SS_16K
+revision: 407cb030cd66340918ebb6c8cc63b18f8592cdbe
+sha256: 461e4aa6db7ab71a0aea99d5c170d3b50ac2eb95e33f55c91c0e5e58ea9964b3
 code_license: Apache-2.0
 weight_license: Apache-2.0
-training_data_caveat: >-
-  Repository is Apache-2.0; exact weights and their dataset caveat must be pinned
-  per checkpoint (spec 20). K=2, 16 kHz in and out (spec 5.4).
+training_data_caveat: ClearerVoice-Studio weights, Apache-2.0. K=2, 16 kHz in and
+  out (spec 5.4). The training-data caveat of the exact checkpoint must be re-read
+  at licence review; the repository licence alone does not grant commercial rights
+  (spec 20).
 production_action: production_candidate
 enabled: true
+local_path: /models/mossformer2-ss-16k
+files:
+- path: .cache/huggingface/.gitignore
+  sha256: 684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1
+  size_bytes: 1
+- path: .cache/huggingface/CACHEDIR.TAG
+  sha256: f6572428f6d5e1575e73a1502895a8731f10757dfbb634909c6e154b849af91d
+  size_bytes: 191
+- path: .cache/huggingface/download/last_best_checkpoint.metadata
+  sha256: 0073cc0e746da597c479341bf772c407e8301a1210598d980d8e1c0e857f2df8
+  size_bytes: 101
+- path: .cache/huggingface/download/last_best_checkpoint.pt.metadata
+  sha256: 1f12687332cdae98d9a2e47636c85daa5cd08aed2943f8b6c87bc6df99dcaac4
+  size_bytes: 125
+- path: .cache/huggingface/trees/407cb030cd66340918ebb6c8cc63b18f8592cdbe.json
+  sha256: e1bd1c8f108f3ba0446e986f4dd7fa11f75ac2d21649b9d1c87af419b52b60aa
+  size_bytes: 649
+- path: last_best_checkpoint
+  sha256: 315744c841441f8831cb2f896e06102b4d864776bf272febaa30c639c903e1c0
+  size_bytes: 24
+- path: last_best_checkpoint.pt
+  sha256: 00a3a48bda492db1e829b85dd443f8f43a43039a3e90f1a24962ea9caf14a11a
+  size_bytes: 670353271
