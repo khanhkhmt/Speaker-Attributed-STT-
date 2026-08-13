@@ -16,7 +16,10 @@ demonstration, never a model result (spec 18 rule 6, 19.1).
 
 from __future__ import annotations
 
+import base64
+import binascii
 import io
+import os
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,7 +35,7 @@ from sastt.adapters.persistence.memory import IdempotencyConflictError
 from sastt.application.offline_pipeline import OfflinePipeline, OfflineResult, PipelineAdapters
 from sastt.application.streaming_pipeline import StreamingSession
 from sastt.config import Environment, SasttConfig, load_config, load_manifests
-from sastt.domain.audio import CANONICAL_SAMPLE_RATE
+from sastt.domain.audio import CANONICAL_SAMPLE_RATE, seconds_to_ms
 from sastt.domain.errors import ConfigurationError, ErrorCode, ModelNotReadyError, SasttError
 from sastt.domain.events import JobRecord, JobState, new_id
 from sastt.domain.transcript import render_transcript
@@ -99,10 +102,79 @@ def build_fake_engine(config: SasttConfig) -> Engine:
 
 
 def build_real_engine(config: SasttConfig) -> Engine:
-    """Real model adapters — Milestone 1 (spec 18)."""
-    raise ModelNotReadyError(
-        "the real model adapters land in Milestone 1; run with SASTT_ENGINE=fake",
-        details={"engine": "real"},
+    """Milestone 1 adapters: pyannote, faster-whisper, MossFormer2 and CAM++.
+
+    Every model version string is the manifest ``release_id``, so each output
+    records the exact pinned revision it came from (spec FR-013, 11.2). A
+    missing or unpinned checkpoint raises :class:`ModelNotReadyError` instead of
+    quietly degrading to a fake (spec 18 rule 6).
+    """
+    from sastt.adapters.clearvoice import MossFormer2Separator
+    from sastt.adapters.faster_whisper import FasterWhisperRecognizer, SileroVoiceActivityDetector
+    from sastt.adapters.ffmpeg import FfmpegAudioDecoder
+    from sastt.adapters.pyannote import PyannoteDiarizer, PyannoteOverlapDetector
+    from sastt.adapters.speaker3d import CamPlusPlusEmbedder
+
+    manifests = load_manifests(REPO_ROOT / "model-manifests")
+
+    def version(backend: str) -> str:
+        manifest = manifests.get(backend)
+        return manifest.release_id if manifest else f"{backend}@unpinned"
+
+    def path(value: str | None, what: str) -> str:
+        if not value:
+            raise ModelNotReadyError(f"no model path configured for {what}")
+        return value
+
+    diarizer = PyannoteDiarizer(
+        path(config.diarization.model_path, "diarization"),
+        model_version=version("pyannote-community-1"),
+        exclusive_tracks=config.diarization.exclusive_output_for_non_overlap_alignment,
+    )
+    overlap_detector = PyannoteOverlapDetector(
+        path(config.overlap_detection.model_path, "overlap detection"),
+        model_version=version("pyannote_segmentation_3.0"),
+        onset=config.overlap_detection.onset,
+        offset=config.overlap_detection.offset,
+        min_duration_ms=seconds_to_ms(config.overlap_detection.min_duration_seconds),
+        merge_gap_ms=seconds_to_ms(config.overlap_detection.merge_gap_seconds),
+    )
+    recognizer = FasterWhisperRecognizer(
+        path(config.asr.realtime_model_path, "ASR"),
+        model_version=version("faster_whisper"),
+        compute_type=config.asr.compute_type,
+        language=config.asr.language,
+    )
+    embedder = CamPlusPlusEmbedder(
+        path(config.speaker_embedding.model_path, "speaker embedding"),
+        model_version=version("3d_speaker_campplus"),
+        minimum_speech_ms=seconds_to_ms(config.speaker_embedding.minimum_clean_speech_seconds),
+        target_speech_ms=seconds_to_ms(config.speaker_embedding.target_clean_speech_seconds),
+    )
+    separator = MossFormer2Separator(
+        path(config.separation.two_source_model_path, "two-source separation"),
+        separator_version=version("mossformer2_ss_16k"),
+    )
+    bundle = PipelineAdapters(
+        decoder=FfmpegAudioDecoder(max_hours=config.audio.max_file_hours),
+        vad=SileroVoiceActivityDetector(),
+        diarizer=diarizer,
+        overlap_detector=overlap_detector,
+        recognizer=recognizer,
+        embedder=embedder,
+        separator=separator,
+    )
+
+    unpinned = [name for name, manifest in manifests.items() if not manifest.is_pinned]
+    return Engine(
+        name="real",
+        config=config,
+        adapters_for=lambda _scenario=None: bundle,
+        ready=True,
+        detail=(
+            "Milestone 1 adapters on pinned weights."
+            + (f" Unpinned backends present: {', '.join(sorted(unpinned))}." if unpinned else "")
+        ),
     )
 
 
@@ -172,10 +244,11 @@ def dev_tenant(request: Request, x_tenant_id: str | None = Header(default=None))
 def create_app(
     config: SasttConfig | None = None,
     *,
-    engine_name: str = "fake",
+    engine_name: str | None = None,
     environment: Environment | str = Environment.DEVELOPMENT,
 ) -> FastAPI:
     env = environment if isinstance(environment, Environment) else Environment(environment)
+    engine_name = engine_name or os.environ.get("SASTT_ENGINE", "fake")
     config = config or load_config(
         REPO_ROOT / "configs" / "default.yaml",
         environment=env,
@@ -272,13 +345,27 @@ def create_app(
         state: AppState = request.app.state.sastt
 
         scenario_name = payload.get("scenario")
-        if not scenario_name:
-            raise ModelNotReadyError(
-                "uploading real audio needs the Milestone 1 model adapters; "
-                'use {"scenario": "..."} against the fake engine for now',
-            )
-        scenario = load_demo_scenario(str(scenario_name))
-        audio = scenario_wav(scenario)
+        scenario: Scenario | None = None
+        if scenario_name:
+            scenario = load_demo_scenario(str(scenario_name))
+            audio = scenario_wav(scenario)
+        else:
+            encoded = payload.get("audio_base64")
+            if not encoded:
+                raise HTTPException(
+                    status_code=400, detail="provide either 'scenario' or 'audio_base64'"
+                )
+            if state.engine.name == "fake":
+                # The fake adapters read synthetic tones, so real speech would come
+                # back empty. Say so rather than return a hollow transcript
+                # (spec 18 rule 6).
+                raise ModelNotReadyError(
+                    "real audio needs the model engine; start the API with SASTT_ENGINE=real"
+                )
+            try:
+                audio = base64.b64decode(str(encoded), validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise HTTPException(status_code=400, detail="audio_base64 is not valid") from exc
 
         try:
             job, created = state.jobs.create_or_get(
@@ -291,7 +378,7 @@ def create_app(
             raise HTTPException(status_code=409, detail=exc.message) from exc
 
         if created:
-            state.job_scenarios[job.job_id] = str(scenario_name)
+            state.job_scenarios[job.job_id] = str(scenario_name or "upload")
             _run_job(state, job, scenario, audio, tenant_id)
         return _job_view(state, job, created)
 
@@ -416,7 +503,7 @@ def _job_view(state: AppState, job: JobRecord, created: bool) -> dict[str, Any]:
 def _run_job(
     state: AppState,
     job: JobRecord,
-    scenario: Scenario,
+    scenario: Scenario | None,
     audio: bytes,
     tenant_id: str,
 ) -> None:
@@ -431,9 +518,9 @@ def _run_job(
         metrics=state.metrics,
     )
     job.transition(JobState.PREPROCESSING)
+    payload = _strip_wav_header(audio) if state.engine.name == "fake" else audio
     try:
-        # WAV header is stripped: the fake decoder consumes raw PCM s16le.
-        result = pipeline.run(_strip_wav_header(audio), ctx, job=job)
+        result = pipeline.run(payload, ctx, job=job)
     except SasttError as exc:
         job.error_code = exc.code.value if exc.code else "INTERNAL"
         job.transition(JobState.FAILED)

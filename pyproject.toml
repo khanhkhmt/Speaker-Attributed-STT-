@@ -71,5 +71,15 @@ disallow_any_generics = true
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["scipy.*", "yaml.*", "jsonschema.*", "modelscope.*", "huggingface_hub.*"]
+module = [
+    "scipy.*",
+    "yaml.*",
+    "jsonschema.*",
+    "modelscope.*",
+    "huggingface_hub.*",
+    "faster_whisper.*",
+    "clearvoice.*",
+    "torchaudio.*",
+    "pyannote.*",
+]
 ignore_missing_imports = true

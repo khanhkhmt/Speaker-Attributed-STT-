@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -65,9 +66,17 @@ class TestOfflineJobs:
         overlapping = [s for s in result["segments"] if s["is_overlap"]]
         assert len(overlapping) == 2  # two concurrent speakers survive (spec 0.1.7)
 
+    def test_a_job_needs_a_scenario_or_audio(self, client: TestClient) -> None:
+        response = client.post("/v1/jobs", json={}, headers={"Idempotency-Key": "empty-test"})
+        assert response.status_code == 400
+
     def test_real_audio_upload_reports_model_not_ready(self, client: TestClient) -> None:
         """Spec 18 rule 6: no pretending the fake engine transcribes real audio."""
-        response = client.post("/v1/jobs", json={}, headers={"Idempotency-Key": "upload-test"})
+        response = client.post(
+            "/v1/jobs",
+            json={"audio_base64": base64.b64encode(b"\x00\x00" * 16_000).decode()},
+            headers={"Idempotency-Key": "upload-test"},
+        )
         assert response.status_code == 503
         assert response.json()["error_code"] == "MODEL_NOT_READY"
 

@@ -88,6 +88,9 @@
         <option value="4" selected>4× (nhanh)</option>
         <option value="0">Tức thì</option>
       </select>
+      <label for="upload">Hoặc tải audio thật lên</label>
+      <input id="upload" type="file" accept="audio/*" disabled
+             style="width:100%;font-size:12px;color:var(--muted)" />
       <button id="run-offline" class="primary">Chạy job offline</button>
       <button id="run-stream">Chạy near-realtime</button>
       <button id="test-resume" disabled>Test reconnect / replay</button>
@@ -156,6 +159,12 @@ async function boot() {
        độ chính xác (spec 19.1, 18 rule 6). Weights đã pin: ${pinned}/${ready.models.length}.`
     : `<b>Engine = ${ready.engine}.</b> Weights đã pin: ${pinned}/${ready.models.length}.`;
 
+  if (ready.engine !== "fake") {
+    $("upload").disabled = false;
+    $("upload").title = "WAV/FLAC/MP3/M4A/Ogg, tối đa 4 giờ";
+  } else {
+    $("upload").title = "cần SASTT_ENGINE=real";
+  }
   const list = (await (await fetch("/v1/demo/scenarios")).json()).scenarios;
   $("scenario").innerHTML = list.map(s =>
     `<option value="${s.name}">${s.title} — ${s.speakers.length} người, ${(s.duration_ms/1000).toFixed(0)}s, ${s.overlap_regions} vùng chồng lấn</option>`
@@ -233,21 +242,34 @@ function logEvent(event) {
   $("events").scrollTop = $("events").scrollHeight;
 }
 
+async function fileToBase64(file) {
+  const buffer = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < buffer.length; i += 0x8000)
+    binary += String.fromCharCode.apply(null, buffer.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
 async function runOffline() {
+  const upload = $("upload").files[0];
   const scenario = $("scenario").value;
+  const source = upload ? upload.name : scenario;
   speakerColor = new Map();
   $("events-card").hidden = true;
-  setMeta({ "chế độ": "offline job", "kịch bản": scenario, "trạng thái": "đang chạy…" });
+  setMeta({ "chế độ": "offline job", "nguồn": source, "trạng thái": "đang chạy…" });
 
-  const created = await (await fetch("/v1/jobs", {
+  const body = upload ? { audio_base64: await fileToBase64(upload) } : { scenario };
+  const response = await fetch("/v1/jobs", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Idempotency-Key": `demo-${scenario}-${Date.now()}` },
-    body: JSON.stringify({ scenario }),
-  })).json();
+    headers: { "Content-Type": "application/json", "Idempotency-Key": `demo-${source}-${Date.now()}` },
+    body: JSON.stringify(body),
+  });
+  const created = await response.json();
+  if (!response.ok) throw new Error(created.message || created.detail || "job failed");
 
   const result = await (await fetch(`/v1/jobs/${created.job_id}/result`)).json();
   setMeta({
-    "chế độ": "offline job", "job": created.job_id.slice(0, 18) + "…",
+    "chế độ": "offline job", "nguồn": source, "job": created.job_id.slice(0, 18) + "…",
     "trạng thái": result.state, "người trong phiên": result.estimated_session_speakers,
     "segment": result.segments.length,
     "cảnh báo": result.warnings.length ? result.warnings.join(", ") : "—",
