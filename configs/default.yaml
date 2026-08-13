@@ -1,0 +1,86 @@
+# Canonical configuration — spec section 12.
+# Every threshold that has not been calibrated stays null and the worker fails closed.
+product:
+  max_session_speakers: 5
+  max_supported_concurrent_speakers: 2
+  three_source_beta: false
+  mono_four_five_source_research: false
+  multichannel_gss: false
+  target_speaker_extraction: false
+
+audio:
+  canonical_sample_rate: 16000
+  preserve_input_channels: true
+  max_channels: 8
+  max_file_hours: 4
+  overlap_context_seconds: 0.50
+
+streaming:
+  frame_ms: 40
+  ring_buffer_seconds: 30
+  diarization_window_seconds: 10
+  diarization_hop_seconds: 2
+  finalize_after_silence_seconds: 1.2
+  provisional_updates: true
+  allow_revision: true
+
+diarization:
+  primary: pyannote-community-1
+  model_path: /models/pyannote-community-1
+  min_speakers: 1
+  max_speakers: 5
+  regular_output_for_overlap: true
+  exclusive_output_for_non_overlap_alignment: true
+
+overlap_detection:
+  model_path: /models/pyannote-segmentation-3.0
+  onset: 0.60
+  offset: 0.50
+  min_duration_seconds: 0.30
+  merge_gap_seconds: 0.20
+
+source_count:
+  production_default: fixed_two
+  minimum_confidence: 0.75
+  multidecoder_research_model_path: null
+
+separation:
+  two_source_backend: mossformer2_ss_16k
+  two_source_model_path: /models/mossformer2-ss-16k
+  three_source_backend: sepformer_libri3mix
+  three_source_model_path: null
+  max_crop_seconds: 10
+  stitch_overlap_seconds: 1
+
+speaker_embedding:
+  backend: 3d_speaker_campplus
+  model_path: /models/campplus
+  minimum_clean_speech_seconds: 1.5
+  target_clean_speech_seconds: 3.0
+  update_from_separated_sources: false
+
+source_linking:
+  accept_threshold: null
+  ambiguous_margin: null
+  continuity_bonus: 0.02
+  algorithm: hungarian
+
+voice_id:
+  enabled: true
+  accept_threshold: null
+  ambiguous_margin: null
+  minimum_enrollment_clips: 3
+  minimum_total_speech_seconds: 15
+  fail_closed_when_uncalibrated: true
+
+asr:
+  realtime_model_path: /models/faster-whisper-large-v3-turbo
+  final_model_path: /models/faster-whisper-large-v3
+  language: vi
+  word_timestamps: true
+  compute_type: int8_float16
+  final_rescore: false
+
+confidence:
+  calibration_path: null
+  return_null_when_uncalibrated: true

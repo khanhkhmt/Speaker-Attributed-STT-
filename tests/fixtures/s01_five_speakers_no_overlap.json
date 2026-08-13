@@ -1,0 +1,12 @@
+{
+  "name": "S01 five speakers, no overlap",
+  "speakers": ["spk_a", "spk_b", "spk_c", "spk_d", "spk_e"],
+  "duration_ms": 21000,
+  "turns": [
+    {"speaker": "spk_a", "start_ms": 0, "end_ms": 4000, "text": "xin chào tất cả mọi người"},
+    {"speaker": "spk_b", "start_ms": 4200, "end_ms": 8000, "text": "chào anh tôi là người thứ hai"},
+    {"speaker": "spk_c", "start_ms": 8200, "end_ms": 12000, "text": "tôi phụ trách phần kỹ thuật"},
+    {"speaker": "spk_d", "start_ms": 12200, "end_ms": 16000, "text": "còn tôi lo phần vận hành"},
+    {"speaker": "spk_e", "start_ms": 16200, "end_ms": 20000, "text": "tôi là người cuối cùng phát biểu"}
+  ]
+}

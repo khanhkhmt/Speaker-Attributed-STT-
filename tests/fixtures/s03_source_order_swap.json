@@ -1,0 +1,18 @@
+{
+  "name": "S03 separator source order changes between chunks",
+  "speakers": ["spk_a", "spk_b"],
+  "duration_ms": 26000,
+  "turns": [
+    {"speaker": "spk_a", "start_ms": 0, "end_ms": 5000, "text": "giới thiệu của người một"},
+    {"speaker": "spk_b", "start_ms": 5500, "end_ms": 10000, "text": "giới thiệu của người hai"},
+    {"speaker": "spk_a", "start_ms": 11000, "end_ms": 14000, "text": "chồng lấn lần một người một"},
+    {"speaker": "spk_b", "start_ms": 11000, "end_ms": 14000, "text": "chồng lấn lần một người hai"},
+    {"speaker": "spk_a", "start_ms": 18000, "end_ms": 21000, "text": "chồng lấn lần hai người một"},
+    {"speaker": "spk_b", "start_ms": 18000, "end_ms": 21000, "text": "chồng lấn lần hai người hai"},
+    {"speaker": "spk_a", "start_ms": 22000, "end_ms": 25000, "text": "kết luận của người một"}
+  ],
+  "source_orders": [
+    {"start_ms": 11000, "end_ms": 14000, "order": ["spk_a", "spk_b"]},
+    {"start_ms": 18000, "end_ms": 21000, "order": ["spk_b", "spk_a"]}
+  ]
+}

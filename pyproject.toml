@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sastt"
+version = "0.1.0"
+description = "Speaker-Attributed STT — production implementation of docs/production-technical-spec.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "jsonschema>=4.20",
+    "ruff>=0.5",
+    "mypy>=1.8",
+]
+# Installed only in the API image (spec 11.1). Not needed for Milestone 0 tests.
+api = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=12"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sastt = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "unit: pure logic, no I/O, no model weights",
+    "contract: adapter conforms to a domain port",
+    "integration: pipeline over fake adapters, no model weights",
+    "model: requires pinned local weights and/or GPU (spec 16.1.4)",
+    "load: load/soak/latency tests (spec 16.1.6)",
+]
+# Spec 16.3: CI must not download models or need a Hub token.
+addopts = "-m 'not model and not load' --strict-markers"
+
+[tool.coverage.run]
+source = ["sastt.domain", "sastt.application"]
+branch = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "RET", "TID", "PTH", "N"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["N802"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/sastt"]
+strict = true
+plugins = ["pydantic.mypy"]
+disallow_any_generics = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "yaml.*", "jsonschema.*"]
+ignore_missing_imports = true

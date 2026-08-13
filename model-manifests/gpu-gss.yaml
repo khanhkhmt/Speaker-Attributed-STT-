@@ -1,0 +1,13 @@
+component: separation_multichannel
+backend: gpu_gss
+repository: https://github.com/desh2608/gss
+revision: null
+sha256: null
+code_license: MIT
+weight_license: n/a
+training_data_caveat: >-
+  Signal-processing pipeline, no pretrained weights. Requires synchronous multichannel
+  input plus RTTM/activity guidance; wrong guidance is not repaired by GSS (spec 5.4).
+production_action: phase_2
+requires_flag: multichannel_gss
+enabled: true

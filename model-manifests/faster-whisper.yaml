@@ -1,0 +1,12 @@
+component: asr
+backend: faster_whisper
+repository: https://github.com/SYSTRAN/faster-whisper
+revision: null
+sha256: null
+code_license: MIT
+weight_license: MIT
+training_data_caveat: >-
+  MIT implementation. CTranslate2/CUDA compatibility and the model revision
+  (large-v3-turbo realtime, large-v3 final) must be pinned together (spec 20).
+production_action: production_candidate
+enabled: true

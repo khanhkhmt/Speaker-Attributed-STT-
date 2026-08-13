@@ -1,0 +1,57 @@
+name: CI
+
+# Spec 16.3: the ordinary CI run never downloads model weights and never needs a
+# Hub token. Model smoke tests (marker `model`) and load tests (marker `load`)
+# are excluded here and run on a separate GPU runner.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  SASTT_ENV: development
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+
+      - name: Type check (mypy strict)
+        run: mypy
+
+      - name: Tests
+        # Domain and application coverage gate of spec 16.3 (>= 85%).
+        run: |
+          pytest -q \
+            --cov=sastt.domain --cov=sastt.application \
+            --cov-report=term-missing --cov-fail-under=85
+
+      - name: No weights in the repository
+        # Spec 18 rule 4: weights are never committed to Git.
+        run: |
+          if git ls-files | grep -E '\.(ckpt|pt|bin|onnx|safetensors)$'; then
+            echo "model weights must not be committed (spec 18)" >&2
+            exit 1
+          fi

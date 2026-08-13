@@ -1,0 +1,11 @@
+{
+  "name": "S04 overlap from the first second",
+  "speakers": ["spk_a", "spk_b"],
+  "duration_ms": 20000,
+  "turns": [
+    {"speaker": "spk_a", "start_ms": 0, "end_ms": 3500, "text": "mở đầu của người một"},
+    {"speaker": "spk_b", "start_ms": 0, "end_ms": 3500, "text": "mở đầu của người hai"},
+    {"speaker": "spk_a", "start_ms": 5000, "end_ms": 10000, "text": "đoạn sạch của người một sau phần chồng lấn"},
+    {"speaker": "spk_b", "start_ms": 11000, "end_ms": 16000, "text": "đoạn sạch của người hai sau phần chồng lấn"}
+  ]
+}

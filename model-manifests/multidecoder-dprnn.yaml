@@ -1,0 +1,14 @@
+component: separation_research
+backend: multidecoder_dprnn
+repository: https://huggingface.co/JunzheJosephZhu/MultiDecoderDPRNN
+revision: null
+sha256: null
+code_license: MIT
+weight_license: research-only
+training_data_caveat: >-
+  The public checkpoint is a WSJ0 derivative and its model card states research-only
+  conditions. Production images, commercial manifests and feature flags MUST disable
+  this checkpoint (spec 0.2, 20).
+production_action: deny
+requires_flag: mono_four_five_source_research
+enabled: true

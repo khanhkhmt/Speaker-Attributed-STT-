@@ -1,0 +1,13 @@
+component: diarization
+backend: pyannote-community-1
+repository: https://huggingface.co/pyannote/speaker-diarization-community-1
+# Pinned during model preparation (spec 11.2); production startup fails while null.
+revision: null
+sha256: null
+code_license: MIT
+weight_license: CC-BY-4.0
+training_data_caveat: >-
+  Gated pipeline: terms must be accepted and attribution recorded before use.
+  Speaker bounds 1-5 per spec 0.1.
+production_action: allow
+enabled: true

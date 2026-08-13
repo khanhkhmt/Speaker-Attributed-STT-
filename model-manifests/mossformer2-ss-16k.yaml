@@ -1,0 +1,12 @@
+component: separation_two_source
+backend: mossformer2_ss_16k
+repository: https://github.com/modelscope/ClearerVoice-Studio
+revision: null
+sha256: null
+code_license: Apache-2.0
+weight_license: Apache-2.0
+training_data_caveat: >-
+  Repository is Apache-2.0; exact weights and their dataset caveat must be pinned
+  per checkpoint (spec 20). K=2, 16 kHz in and out (spec 5.4).
+production_action: production_candidate
+enabled: true

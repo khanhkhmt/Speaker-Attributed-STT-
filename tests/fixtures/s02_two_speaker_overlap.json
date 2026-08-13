@@ -1,0 +1,12 @@
+{
+  "name": "S02 two speakers overlapping mid-session",
+  "speakers": ["spk_a", "spk_b"],
+  "duration_ms": 20000,
+  "turns": [
+    {"speaker": "spk_a", "start_ms": 0, "end_ms": 5000, "text": "phần đầu của người thứ nhất"},
+    {"speaker": "spk_b", "start_ms": 5500, "end_ms": 10000, "text": "phần đầu của người thứ hai"},
+    {"speaker": "spk_a", "start_ms": 11000, "end_ms": 15000, "text": "nội dung chồng lấn của người một"},
+    {"speaker": "spk_b", "start_ms": 12000, "end_ms": 16000, "text": "nội dung chồng lấn của người hai"},
+    {"speaker": "spk_a", "start_ms": 16500, "end_ms": 19000, "text": "kết thúc phiên họp"}
+  ]
+}
