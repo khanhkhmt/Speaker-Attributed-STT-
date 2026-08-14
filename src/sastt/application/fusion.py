@@ -176,11 +176,16 @@ class FusionEngine:
         return utterances
 
     def _fallback_speaker_id(self, word: Word) -> str:
-        """Attach unattributed words to a provisional speaker instead of dropping them."""
+        """Attach unattributed words to a provisional speaker instead of dropping them.
+
+        Falls back to the session's single ``Unknown`` sink rather than minting a
+        fresh identity per unattributed word: a full session would otherwise
+        breach ``max_session_speakers`` (spec 0.1.1) or fail the job outright.
+        """
         provisional = self.state.provisional_speakers()
         if provisional:
             return provisional[0].session_speaker_id
-        return self.state.create_temporary_speaker().session_speaker_id
+        return self.state.unattributed_speaker().session_speaker_id
 
     # -- segments ------------------------------------------------------------ #
 

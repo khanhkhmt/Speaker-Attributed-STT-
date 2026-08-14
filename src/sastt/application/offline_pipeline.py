@@ -390,6 +390,7 @@ class OfflinePipeline:
                 ctx=ctx,
             )
             previous_mapping = result.mapping()
+            assigned_in_crop: list[str] = []
 
             for index, link in enumerate(result.decisions):
                 source = source_buffers[index]
@@ -405,12 +406,28 @@ class OfflinePipeline:
 
                 speaker_id = link.session_speaker_id
                 if speaker_id is None:
-                    # Spec 5.9: no confident link -> temporary identity, reconciled later.
-                    temporary = state.create_temporary_speaker()
-                    speaker_id = temporary.session_speaker_id
+                    # Spec 5.9: no confident link -> temporary identity, reconciled
+                    # later. That only makes sense when the source carries evidence
+                    # reconciliation can actually use. A source too short or too
+                    # poor to embed can never be merged back, so minting an ID for
+                    # it would strand a permanent `Unknown` speaker in the roster
+                    # and push the session past max_session_speakers. Spec 15 says
+                    # such a source is simply Unknown, and spec 0.1.1 caps the
+                    # session at five speakers.
                     embedding = embeddings[index]
-                    if embedding is not None:
-                        state.buffer_provisional_embedding(speaker_id, embedding)
+                    usable = (
+                        embedding is not None
+                        and embedding.speech_duration_ms >= state.minimum_speech_ms
+                    )
+                    if usable and state.can_admit_speaker:
+                        temporary = state.create_temporary_speaker()
+                        speaker_id = temporary.session_speaker_id
+                        state.buffer_provisional_embedding(
+                            speaker_id,
+                            embedding,  # type: ignore[arg-type]
+                        )
+                    else:
+                        warnings.append("unidentified_source")
                 elif embeddings[index] is not None:
                     state.update_prototype(
                         speaker_id,
@@ -418,6 +435,16 @@ class OfflinePipeline:
                         link_margin=link.margin,
                         source_quality_passed=batch.source_quality[index].passed_gate,
                     )
+
+                # Sources of one crop are concurrent by construction, so they are
+                # different people and can never be merged later (spec 5.6, 5.8.7).
+                # Without this the temporary identity of a rejected source is free
+                # to be reconciled into the speaker another source already holds.
+                # An unidentified source has no ID to constrain.
+                if speaker_id is not None:
+                    for other_id in assigned_in_crop:
+                        state.add_cannot_link(other_id, speaker_id)
+                    assigned_in_crop.append(speaker_id)
 
                 raw_scores = dict(asr.raw_scores)
                 if link.score is not None:

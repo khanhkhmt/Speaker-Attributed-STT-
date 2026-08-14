@@ -24,6 +24,7 @@ from sastt.domain.speakers import (
 
 TEMPORARY_LABEL = "Temporary Speaker {index}"
 SPEAKER_LABEL = "Speaker {index}"
+UNATTRIBUTED_LABEL = "Unknown"
 
 REASON_TOO_SHORT = "speech_shorter_than_minimum"
 REASON_NOT_ANONYMOUS = "identity_not_resolved"
@@ -67,6 +68,7 @@ class SessionSpeakerState:
     pending_label_changes: list[LabelChange] = field(default_factory=list)
     _temporary_counter: int = 0
     _label_counter: int = 0
+    _unattributed_id: str | None = None
 
     # -- creation ------------------------------------------------------------ #
 
@@ -96,7 +98,17 @@ class SessionSpeakerState:
         return speaker
 
     def create_temporary_speaker(self) -> SessionSpeaker:
-        """Overlap before any clean centroid exists — spec 5.9 step 1."""
+        """Overlap before any clean centroid exists — spec 5.9 step 1.
+
+        A temporary identity counts against ``max_session_speakers`` like any
+        other: spec 0.1.1 bounds the whole session at five speakers, and a
+        provisional identity is still one of them.
+        """
+        if not self.can_admit_speaker:
+            raise InvalidStateTransitionError(
+                f"session already holds {self.config.product.max_session_speakers} speakers "
+                "(spec 0.1.1)"
+            )
         self._temporary_counter += 1
         speaker = SessionSpeaker(
             session_speaker_id=self._new_id(),
@@ -104,6 +116,35 @@ class SessionSpeakerState:
             display_label=TEMPORARY_LABEL.format(index=self._temporary_counter),
         )
         self._register(speaker)
+        return speaker
+
+    def unattributed_speaker(self) -> SessionSpeaker:
+        """The single sink for words no speaker turn claims — FR-012.
+
+        This is not a sixth person: it carries no evidence and stands for the
+        *absence* of an identity, so it is exempt from the
+        ``max_session_speakers`` bound of spec 0.1.1. It is created at most once
+        per session and reused, so unattributable audio can never inflate the
+        speaker roster the way one-identity-per-fragment would.
+
+        Fusion keeps the words rather than dropping them (spec 0.1.7).
+        """
+        if self._unattributed_id is not None:
+            return self.speakers[self._unattributed_id]
+        speaker = SessionSpeaker(
+            session_speaker_id=self._new_id(),
+            machine=SpeakerIdentityStateMachine(IdentityState.PROVISIONAL),
+            display_label=UNATTRIBUTED_LABEL,
+        )
+        # Spec 6 only allows PROVISIONAL/SESSION_ANONYMOUS as initial states, so
+        # the sink enters provisional and immediately takes the documented
+        # "insufficient evidence" edge to UNKNOWN. It is born without evidence and
+        # can never gain any, and fusion creates it *after*
+        # ``finalize_unresolved`` has run, so it would otherwise be reported as
+        # `provisional` under an `Unknown` label for the rest of the session.
+        speaker.machine.transition(IdentityState.UNKNOWN, "insufficient_evidence")
+        self._register(speaker)
+        self._unattributed_id = speaker.session_speaker_id
         return speaker
 
     def _register(self, speaker: SessionSpeaker) -> None:
@@ -144,6 +185,15 @@ class SessionSpeakerState:
     @property
     def active_speaker_count(self) -> int:
         return len(self.active)
+
+    @property
+    def can_admit_speaker(self) -> bool:
+        """Whether another session speaker still fits under spec 0.1.1 / 12.
+
+        Callers check this before minting an identity; the create methods raise
+        rather than silently exceeding ``max_session_speakers``.
+        """
+        return self.active_speaker_count < self.config.product.max_session_speakers
 
     def prototypes(self) -> list[SpeakerPrototype]:
         """Prototypes usable as linking targets (spec 5.8).
