@@ -40,6 +40,7 @@ class MossFormer2Separator:
         *,
         separator_version: str,
         config_path: str | Path | None = None,
+        device: str = "cuda:0",
     ) -> None:
         self.model_path = Path(model_path)
         self._separator_version = separator_version
@@ -72,8 +73,26 @@ class MossFormer2Separator:
         settings["checkpoint_dir"] = str(self.model_path)
         self._args = types.SimpleNamespace(**settings)
         self._decode = decode_one_audio_mossformer2_ss_16k
+        # clearvoice's SpeechModel picks "the GPU with the most free memory" and
+        # calls torch.cuda.set_device() globally. On a multi-GPU host that both
+        # strands the separator on a different device from the rest of the
+        # pipeline and drags every adapter constructed afterwards onto that
+        # device, which surfaces as "invalid device ordinal" or an out-of-memory
+        # error once the two halves disagree. Spec 11.1 gives a worker one GPU, so
+        # the choice is pinned here and the global device is put back.
         try:
-            self._wrapper = CLS_MossFormer2_SS_16K(self._args)
+            import torch
+
+            previous = torch.cuda.current_device() if torch.cuda.is_available() else None
+            try:
+                self._wrapper = CLS_MossFormer2_SS_16K(self._args)
+            finally:
+                if previous is not None:
+                    torch.cuda.set_device(previous)
+            if torch.cuda.is_available():
+                target = torch.device(device)
+                self._wrapper.model.to(target)
+                self._wrapper.device = target
         except Exception as exc:  # noqa: BLE001 - map to a domain error
             raise ModelNotReadyError(f"could not load MossFormer2: {exc}") from exc
 

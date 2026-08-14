@@ -49,7 +49,11 @@ def _load_pipeline(model_path: Path, what: str) -> Any:
     if pipeline is None:
         raise ModelNotReadyError(f"{what} pipeline could not be constructed from {model_path}")
     if torch.cuda.is_available():
-        pipeline.to(torch.device("cuda"))
+        # Explicit index, not the ambient "current device": other in-process
+        # adapters (e.g. clearvoice's SpeechModel) call torch.cuda.set_device()
+        # globally, and a bare torch.device("cuda") would follow that switch
+        # mid-pipeline and split tensors across GPUs.
+        pipeline.to(torch.device("cuda:0"))
     return pipeline
 
 
@@ -163,8 +167,20 @@ class PyannoteOverlapDetector:
                     f"segmentation model could not be constructed from {self.model_path}"
                 )
             if torch.cuda.is_available():
-                model.to(torch.device("cuda"))
-            self._inference = Inference(model, skip_aggregation=False)
+                model.to(torch.device("cuda:0"))
+            # skip_conversion: pyannote.audio's own powerset->multilabel step is
+            # hard-thresholded (soft=False, no override available) — this adapter
+            # needs soft activations for the spec 5.2 hysteresis curve, so it takes
+            # the raw powerset scores here and converts them itself below.
+            # skip_aggregation: pyannote.audio only overlap-adds chunks *after*
+            # conversion (permutation-invariant multilabel), never on raw powerset
+            # logits. With conversion skipped, aggregation must happen manually
+            # (via Inference.aggregate below) using real per-chunk frame timing —
+            # otherwise per-chunk output gets flattened and misread as one
+            # continuous 1 s/frame timeline, inflating timestamps by orders of
+            # magnitude.
+            self._inference = Inference(model, skip_aggregation=True, skip_conversion=True)
+            self._frames = model.receptive_field
             specifications: Any = model.specifications
             self._powerset = Powerset(
                 int(len(specifications.classes)), int(specifications.powerset_max_classes)
@@ -199,15 +215,16 @@ class PyannoteOverlapDetector:
         ctx.check()
         try:
             import torch
+            from pyannote.audio import Inference
             from pyannote.core import SlidingWindowFeature
 
+            # Raw, unaggregated per-chunk powerset scores: (num_chunks, frames, 7).
             scores: Any = self._inference(_as_torch_input(buffer))
-            powerset = torch.from_numpy(scores.data).unsqueeze(0)
+            powerset = torch.from_numpy(scores.data)
             multilabel = self._powerset.to_multilabel(powerset, soft=True)
-            overlap = multilabel.sum(dim=-1).squeeze(0).clamp(0.0, 2.0) - 1.0
-            curve = SlidingWindowFeature(
-                overlap.clamp(0.0, 1.0).cpu().numpy().reshape(-1, 1), scores.sliding_window
-            )
+            overlap = (multilabel.sum(dim=-1, keepdim=True).clamp(0.0, 2.0) - 1.0).clamp(0.0, 1.0)
+            per_chunk_curve = SlidingWindowFeature(overlap.cpu().numpy(), scores.sliding_window)
+            curve = Inference.aggregate(per_chunk_curve, self._frames)
             timeline = self._binarize(curve).get_timeline().support()
         except Exception as exc:  # noqa: BLE001 - never leak a backend exception
             raise SasttError(f"overlap detection failed: {exc}") from exc

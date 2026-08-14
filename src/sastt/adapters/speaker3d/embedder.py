@@ -37,7 +37,7 @@ class CamPlusPlusEmbedder:
         model_path: str | Path,
         *,
         model_version: str,
-        device: str = "cuda",
+        device: str = "cuda:0",
         minimum_speech_ms: int = 1500,
         target_speech_ms: int = 3000,
         checkpoint_name: str = "campplus_cn_en_common.pt",
@@ -69,7 +69,9 @@ class CamPlusPlusEmbedder:
             ) from exc
 
         self._torch = torch
-        self.device = device if (device != "cuda" or torch.cuda.is_available()) else "cpu"
+        self.device = (
+            device if (not device.startswith("cuda") or torch.cuda.is_available()) else "cpu"
+        )
         try:
             model = CAMPPlus(feat_dim=FEATURE_DIM, embedding_size=EMBEDDING_DIM)
             state = torch.load(checkpoint, map_location="cpu")
