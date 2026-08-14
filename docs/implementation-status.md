@@ -4,7 +4,7 @@
 |---|---|
 | Cập nhật | 14/08/2026 |
 | Spec tham chiếu | [`production-technical-spec.md`](production-technical-spec.md) v1.0 |
-| Milestone hiện tại | M0 xong · M1 **xong** · **M2 ~85%** · **M3 ~75%** · **M4 ~35%** · **M5 ~30%** — phần còn lại là gate cần model/GPU/corpus thật |
+| Milestone hiện tại | M0 xong · M1 **xong** · **M2 ~85%** · **M3 ~60%** · **M4 ~35%** · **M5 ~30%** — phần còn lại là gate cần model/GPU/corpus thật |
 | Engine mặc định | `fake` (M0). Đặt `SASTT_ENGINE=real` để dùng adapter model thật |
 
 Tài liệu này ghi **tình trạng thực tế** của repo. Mọi con số đều lấy từ lần chạy
@@ -17,7 +17,7 @@ thật, không ước lượng.
 | M0 — Foundation & contracts | package `sastt`, config validation, domain models, ports, JSON Schema v2, fake adapters, state machine, revision/idempotency, CI | **xong** |
 | M1 — Offline 2-speaker path | decode/resample, adapter pyannote + faster-whisper + MossFormer2 + CAM++, pin manifest, smoke test | **~95%** — DoD pass; còn nợ mục 10 |
 | M2 — Linking & Voice ID | pgvector registry, enrollment quality, deletion/audit | **~85%** — API local tạo/enroll/xem/xóa đã chạy; persistent pgvector cần được chọn khi deploy |
-| M3 — Near-realtime | queue/worker, backpressure, latency instrumentation | **~75%** — WebSocket/revision/replay, bounded RAM ring + disk spool final pass, Prometheus stage/RTF/GPU-optional metrics; chưa có OTel, autoscale hay SLO đo trên baseline |
+| M3 — Near-realtime | queue/worker, backpressure, latency instrumentation | **~60%** — có WebSocket/revision/replay, bounded RAM ring + disk spool final pass, backpressure phía client và Prometheus stage/RTF/GPU-optional metrics. Tuy nhiên chưa chứng minh được stream hết audio và gán speaker ổn định trên audio thật; không đạt beta/production. Chưa có OTel, autoscale hay SLO đo trên baseline. |
 | M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~35%** — router + feature gate + adapter SepFormer 3mix 8 kHz đã có; chưa pre-stage/benchmark checkpoint, chưa có counter production/GSS/WeSep |
 | M5 — Production hardening | benchmark corpus, calibrator, load/soak, SBOM, capacity | **~30%** — calibrator release JSON, CLI benchmark/capacity/SBOM và guardrail test đã có; corpus, calibration release ký duyệt, soak/load và capacity evidence chưa có |
 
@@ -148,6 +148,21 @@ xRT 0.86 · max push latency 4529 ms
 header vào decoder ffmpeg (`ffprobe could not read the input`). Fake decoder
 chấp nhận nên fake test không phát hiện. Đã sửa bằng cách bọc RIFF/WAVE.
 
+> **Trạng thái cập nhật — chưa được chấp nhận.** Lần test tay gần nhất với audio
+> thực vẫn thấy luồng live không ổn định: audio có hai người nói đồng thời nhưng
+> kết quả thường là `Speaker 1` cùng `Temporary Speaker 1`, đôi khi xuất hiện
+> `Temporary Speaker 2` hoặc `Unknown`; người dùng cũng quan sát stream kết thúc
+> trước khi toàn bộ file được thể hiện trong kết quả. Vì vậy số liệu smoke ở trên
+> chỉ chứng minh transport/event cơ bản, **không chứng minh** speaker continuity,
+> overlap attribution, hay end-of-stream completeness.
+>
+> Đã bổ sung các sửa chữa chưa đủ bằng chứng nghiệm thu: giới hạn rolling window,
+> điều tiết `WebSocket.bufferedAmount` ở client, final pass trên toàn bộ PCM đã
+> spool và reconcile nhãn provisional sau finalization. Cần chạy lại cùng một
+> corpus audio thật, lưu frame/byte/audio-duration từ log và đối chiếu transcript
+> cuối trước khi nâng trạng thái M3. Không được coi việc thay model là cách che
+> lỗi logic/transport này.
+
 ### ASR final `large-v3` (spec 0.2)
 
 Chạy lần đầu tiên — trước đó pin 2.9 GiB nhưng chưa thực thi dòng nào:
@@ -249,6 +264,10 @@ Chạy trên fake adapters, không tải weights:
 - **GPU pinning là `cuda:0` cứng** trong adapter pyannote/CAM++ để tránh
   `clearvoice` kéo tensor sang GPU khác. Đúng cho một worker một GPU (spec 11.1),
   nhưng khi tách worker thì device phải lấy từ config chứ không hard-code.
+- **Near-realtime chưa có evidence E2E trên audio thật.** Cần kiểm tra tuần tự:
+  frame nhận/gửi và thời lượng PCM, backlog/đóng WebSocket, final pass có bao phủ
+  đủ audio, rồi mới đánh giá separator/diarizer/linker bằng DER, overlap recall,
+  speaker-confusion và tỷ lệ `Unknown`.
 
 ## 10. Nợ còn lại sau khi đóng M1
 
