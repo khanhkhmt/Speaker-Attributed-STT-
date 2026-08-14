@@ -4,7 +4,7 @@ repository: https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2
 source: huggingface
 repo_id: deepdml/faster-whisper-large-v3-turbo-ct2
 revision: 4df90f75321148c3a29a9e2351b7ddf8f5b115a8
-sha256: 5b5cb1b0f5c6fba2a7c67c41a566010285718eb2f11b58ebd5efe7b72e86a410
+sha256: d114ac3db6420d38bad2445a8d8827e509c0f9eb1d46df60bb698dca3f54828c
 code_license: MIT
 weight_license: MIT
 training_data_caveat: Realtime default of spec 0.2 (large-v3-turbo). SYSTRAN publishes
@@ -20,27 +20,21 @@ files:
 - path: .cache/huggingface/.gitignore
   sha256: 684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1
   size_bytes: 1
-- path: .cache/huggingface/CACHEDIR.TAG
-  sha256: f6572428f6d5e1575e73a1502895a8731f10757dfbb634909c6e154b849af91d
-  size_bytes: 191
 - path: .cache/huggingface/download/config.json.metadata
-  sha256: a2cc398500b26406ad296bcd0e49c73e0acaf3c99986cc77157fd4d37f6bdbc6
-  size_bytes: 101
+  sha256: 254a09710736458fa365b00a14f76fb2eb96823b1d687d0860cb4d114e28f895
+  size_bytes: 100
 - path: .cache/huggingface/download/model.bin.metadata
-  sha256: 991adbad73725b078929d2b9bfd0ba8a782bda34bdedcdb5ad410938b75163ea
+  sha256: 4013788a1c9072e05e91129693f665830f575babdd8f8d96fd760cafe2943f81
   size_bytes: 125
 - path: .cache/huggingface/download/preprocessor_config.json.metadata
-  sha256: eed7b4b75f3ede386d7aa9014cc07ca8a39383bca68de3e12a1c0688d9f9caf1
+  sha256: 191913ca3f318f2009cf641fbf76b39f0de0aa44a9544a75611840dd3f039cee
   size_bytes: 101
 - path: .cache/huggingface/download/tokenizer.json.metadata
-  sha256: 6c0cfa620dc8ac6fe85052928e68b68996e0c869612c2f6ed4f6f0100787452c
+  sha256: ca9a3328567097a91cda0896015cd5f03e0e5b02bb3d1741a067d573bbd778af
   size_bytes: 101
 - path: .cache/huggingface/download/vocabulary.json.metadata
-  sha256: 6817df284dc4111b02b04c5ed546706d9ba0a1e90737ae858fb7db7dc976c595
-  size_bytes: 101
-- path: .cache/huggingface/trees/4df90f75321148c3a29a9e2351b7ddf8f5b115a8.json
-  sha256: 857bc2ae64a92330858c5210eb08720fa00c36794aa199d491b543ab79c88047
-  size_bytes: 950
+  sha256: 6e21220017df7614f18c280469ecdb9d92c09e22c0a309e4a887f851e0c51c78
+  size_bytes: 100
 - path: config.json
   sha256: b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e
   size_bytes: 2263

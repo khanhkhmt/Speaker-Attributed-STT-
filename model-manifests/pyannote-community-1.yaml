@@ -3,17 +3,50 @@ backend: pyannote-community-1
 repository: https://huggingface.co/pyannote/speaker-diarization-community-1
 source: huggingface
 repo_id: pyannote/speaker-diarization-community-1
-# revision / sha256 / files are filled in by deploy/prestage_models.py (spec 11.2).
-revision: null
-sha256: null
+revision: 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee
+sha256: 087336c77dbc524dfae5a1e05e2b84415a930ec334b0b4ad7de43c6d0a572830
 code_license: MIT
 weight_license: CC-BY-4.0
-training_data_caveat: >-
-  Gated pipeline: conditions accepted on the Hugging Face model page and
-  attribution recorded below, as spec 20 requires. Speaker bounds 1-5 (spec 0.1).
+training_data_caveat: 'Gated pipeline: conditions accepted on the Hugging Face model
+  page and attribution recorded below, as spec 20 requires. Speaker bounds 1-5 (spec
+  0.1).'
 terms_accepted_by: huggingface:khanh99
-attribution: >-
-  Speaker diarization by pyannote (speaker-diarization-community-1), CC-BY-4.0.
+attribution: Speaker diarization by pyannote (speaker-diarization-community-1), CC-BY-4.0.
 production_action: allow
 enabled: true
 benchmark_pending: true
+local_path: /models/pyannote-community-1
+files:
+- path: .cache/huggingface/.gitignore
+  sha256: 684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1
+  size_bytes: 1
+- path: .cache/huggingface/download/config.yaml.metadata
+  sha256: b64cc0b33b3e42db86f607ee388e5349c01965e55b03357fb43c1deafacfdf30
+  size_bytes: 100
+- path: .cache/huggingface/download/embedding/pytorch_model.bin.metadata
+  sha256: e949f25189f23db19f9a640f994787d5c55ca8aa78d88c03f6a86bc19064e36f
+  size_bytes: 125
+- path: .cache/huggingface/download/plda/plda.npz.metadata
+  sha256: 71e6ed73ba42bd6c85c3100e4df6ac082849b42f9aa0485013384387995266af
+  size_bytes: 124
+- path: .cache/huggingface/download/plda/xvec_transform.npz.metadata
+  sha256: ee3cfbb6b65e910022f96978246605062b61959caf112ebc82f7ce4dfa970799
+  size_bytes: 125
+- path: .cache/huggingface/download/segmentation/pytorch_model.bin.metadata
+  sha256: dad6bca8d37fca090dda6f07b5de97ec0ca8e9a3aaab4ea140dd4b536e46769a
+  size_bytes: 125
+- path: config.yaml
+  sha256: 5ce2bfa9a938dc132cec1172592d65173cbb8f444ea1e4133f10f9391de155be
+  size_bytes: 444
+- path: embedding/pytorch_model.bin
+  sha256: 6f10ff60898a1d185fa22e1d11e0bfa8a92efec811f11bca48cb8cafebefd929
+  size_bytes: 26646242
+- path: plda/plda.npz
+  sha256: 9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255
+  size_bytes: 133852
+- path: plda/xvec_transform.npz
+  sha256: 325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f
+  size_bytes: 134376
+- path: segmentation/pytorch_model.bin
+  sha256: 7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e
+  size_bytes: 5906507
