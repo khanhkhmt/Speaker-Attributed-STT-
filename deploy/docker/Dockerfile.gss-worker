@@ -1,0 +1,35 @@
+# sastt-gss-worker — optional GPU-GSS environment (spec 11.1, phase 2).
+#
+# Kept in its own image because CuPy/GSS conflicts with the other stacks, which
+# is exactly why spec 11.1 asks for it to be separated. The multichannel branch
+# is disabled by default (config `multichannel_gss: false`), so this image is
+# only built when that flag is turned on.
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3.11 python3-pip ffmpeg \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sf /usr/bin/python3.11 /usr/bin/python3
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+RUN pip install --no-cache-dir . "psycopg[binary,pool]" redis
+# NOTE: gss/cupy are intentionally not installed yet. Spec 11.1 reserves this
+# image for phase 2; adding the dependency before the adapter exists would ship
+# a GPU stack nothing calls.
+
+COPY configs/ ./configs/
+COPY model-manifests/ ./model-manifests/
+
+ENV SASTT_ENGINE=real MODELS_DIR=/models HF_HUB_OFFLINE=1
+
+RUN useradd --create-home --uid 10005 sastt
+USER sastt
+
+CMD ["python3", "-m", "sastt.workers.offline_worker", "--queues", "gss.batch"]

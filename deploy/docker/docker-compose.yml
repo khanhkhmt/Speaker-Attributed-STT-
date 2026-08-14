@@ -1,0 +1,179 @@
+# Deployment topology of spec 11.1 / 11.3.
+#
+#   Client -> API (CPU) -> Redis queues -> ASR / speaker / GSS GPU workers
+#                                       -> fusion worker (CPU)
+#                                       -> PostgreSQL + pgvector, object storage
+#
+# Weights live on a read-only volume: they are staged at build/preparation time
+# by deploy/prestage_models.py and a production worker never downloads a
+# checkpoint at startup (spec 0.3, 11.2).
+#
+#   docker compose -f deploy/docker/docker-compose.yml up -d postgres redis minio
+#   docker compose -f deploy/docker/docker-compose.yml run --rm migrate
+#   docker compose -f deploy/docker/docker-compose.yml up -d
+name: sastt
+
+x-database-url: &database-url
+  DATABASE_URL: postgresql://sastt:${POSTGRES_PASSWORD:-sastt_dev}@postgres:5432/sastt
+
+x-redis-url: &redis-url
+  REDIS_URL: redis://redis:6379/0
+
+# Every GPU worker gets exactly one device: spec 11.1 sizes a worker per GPU, and
+# splitting one pipeline across two devices is what caused "invalid device
+# ordinal" during development.
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: sastt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sastt_dev}
+      POSTGRES_DB: sastt
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sastt -d sastt"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # appendonly: a queue that loses its tail on restart would drop accepted
+    # jobs, which spec 3 forbids.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # S3-compatible encrypted object storage for input/derived audio (spec 10.1).
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-sastt}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-sastt_dev_secret}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Schema is applied at deploy time, never by a worker on startup.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    command: ["python3", "deploy/migrate.py"]
+    environment:
+      <<: *database-url
+    volumes:
+      - ../../migrations:/app/migrations:ro
+      - ../../deploy:/app/deploy:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    environment:
+      <<: [*database-url, *redis-url]
+      SASTT_ENGINE: "real"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  asr-worker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.asr-worker
+    <<: *gpu
+    environment:
+      <<: [*database-url, *redis-url]
+    volumes:
+      - ${MODELS_DIR:-/models}:/models:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  speaker-worker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.speaker-worker
+    <<: *gpu
+    environment:
+      <<: [*database-url, *redis-url]
+    volumes:
+      - ${MODELS_DIR:-/models}:/models:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  fusion-worker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.fusion-worker
+    environment:
+      <<: [*database-url, *redis-url]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Phase 2, multichannel only. Started explicitly:
+  #   docker compose --profile gss up -d gss-worker
+  gss-worker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.gss-worker
+    <<: *gpu
+    profiles: ["gss"]
+    environment:
+      <<: [*database-url, *redis-url]
+    volumes:
+      - ${MODELS_DIR:-/models}:/models:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

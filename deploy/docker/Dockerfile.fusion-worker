@@ -1,0 +1,23 @@
+# sastt-fusion-worker — clustering, Hungarian linking, registry, fusion (spec 11.1).
+#
+# CPU only: this stage is scipy and PostgreSQL, no model weights, so it scales
+# independently of the GPU workers and never competes for VRAM.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+RUN pip install --no-cache-dir . "psycopg[binary,pool]" redis
+
+COPY configs/ ./configs/
+COPY model-manifests/ ./model-manifests/
+
+RUN useradd --create-home --uid 10004 sastt
+USER sastt
+
+CMD ["python3", "-m", "sastt.workers.offline_worker", "--queues", "fusion"]
