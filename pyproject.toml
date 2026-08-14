@@ -42,9 +42,10 @@ markers = [
     "integration: pipeline over fake adapters, no model weights",
     "model: requires pinned local weights and/or GPU (spec 16.1.4)",
     "load: load/soak/latency tests (spec 16.1.6)",
+    "db: needs a migrated PostgreSQL (spec 10); set SASTT_TEST_DATABASE_URL",
 ]
 # Spec 16.3: CI must not download models or need a Hub token.
-addopts = "-m 'not model and not load' --strict-markers"
+addopts = "-m 'not model and not load and not db' --strict-markers"
 
 [tool.coverage.run]
 source = ["sastt.domain", "sastt.application"]

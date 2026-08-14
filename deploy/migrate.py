@@ -55,7 +55,7 @@ def main() -> int:
         with connection.cursor() as cursor:
             cursor.execute(BOOTSTRAP)
             cursor.execute("SELECT filename, sha256 FROM schema_migrations")
-            applied = dict(cursor.fetchall())
+            applied: dict[str, str] = dict(cursor.fetchall())
         connection.commit()
 
         pending: list[Path] = []
