@@ -19,6 +19,14 @@ x-database-url: &database-url
 x-redis-url: &redis-url
   REDIS_URL: redis://redis:6379/0
 
+x-s3: &s3
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_BUCKET: sastt-audio
+  S3_PREFIX: sastt
+  AWS_ACCESS_KEY_ID: ${MINIO_USER:-sastt}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:-sastt_dev_secret}
+  AWS_REGION: us-east-1
+
 # Every GPU worker gets exactly one device: spec 11.1 sizes a worker per GPU, and
 # splitting one pipeline across two devices is what caused "invalid device
 # ordinal" during development.
@@ -77,6 +85,23 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # Create the private bucket before the API accepts an upload. The object
+  # adapter requests SSE on every write; production also applies bucket/KMS
+  # encryption outside this development compose file.
+  minio-init:
+    image: minio/mc:latest
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+      && mc mb --ignore-existing local/sastt-audio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-sastt}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-sastt_dev_secret}
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
   # Schema is applied at deploy time, never by a worker on startup.
   migrate:
     build:
@@ -98,8 +123,9 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
     environment:
-      <<: [*database-url, *redis-url]
+      <<: [*database-url, *redis-url, *s3]
       SASTT_ENGINE: "real"
+      SASTT_JOB_RUNNER: "queue"
     ports:
       - "8000:8000"
     depends_on:
@@ -107,6 +133,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   asr-worker:
@@ -115,7 +143,7 @@ services:
       dockerfile: deploy/docker/Dockerfile.asr-worker
     <<: *gpu
     environment:
-      <<: [*database-url, *redis-url]
+      <<: [*database-url, *redis-url, *s3]
     volumes:
       - ${MODELS_DIR:-/models}:/models:ro
     depends_on:
@@ -123,6 +151,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   speaker-worker:
@@ -131,7 +161,7 @@ services:
       dockerfile: deploy/docker/Dockerfile.speaker-worker
     <<: *gpu
     environment:
-      <<: [*database-url, *redis-url]
+      <<: [*database-url, *redis-url, *s3]
     volumes:
       - ${MODELS_DIR:-/models}:/models:ro
     depends_on:
@@ -139,6 +169,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   fusion-worker:
@@ -146,12 +178,14 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.fusion-worker
     environment:
-      <<: [*database-url, *redis-url]
+      <<: [*database-url, *redis-url, *s3]
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # Phase 2, multichannel only. Started explicitly:
@@ -163,7 +197,7 @@ services:
     <<: *gpu
     profiles: ["gss"]
     environment:
-      <<: [*database-url, *redis-url]
+      <<: [*database-url, *redis-url, *s3]
     volumes:
       - ${MODELS_DIR:-/models}:/models:ro
     depends_on:
@@ -171,6 +205,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:

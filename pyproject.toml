@@ -35,7 +35,7 @@ sastt = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 markers = [
     "unit: pure logic, no I/O, no model weights",
     "contract: adapter conforms to a domain port",
@@ -81,6 +81,7 @@ module = [
     "faster_whisper.*",
     "clearvoice.*",
     "torchaudio.*",
+    "speechbrain.*",
     "pyannote.*",
 ]
 ignore_missing_imports = true

@@ -213,6 +213,17 @@ class SessionSpeakerState:
         """Buffered evidence of temporary identities (spec 5.9 step 4)."""
         return [s.prototype for s in self.provisional_speakers() if s.prototype is not None]
 
+    def linking_prototypes(self) -> list[SpeakerPrototype]:
+        """Candidates for separated-source continuity within the same session.
+
+        A temporary centroid is not eligible for *global reconciliation*, but it
+        is valid evidence that the next separated crop belongs to that same
+        temporary source.  Keeping it here avoids minting a new temporary label
+        for every 10-second overlap crop.  One-to-one Hungarian assignment and
+        cannot-link constraints still prevent concurrent sources sharing it.
+        """
+        return [speaker.prototype for speaker in self.active if speaker.prototype is not None]
+
     def provisional_speakers(self) -> list[SessionSpeaker]:
         return [s for s in self.active if s.state is IdentityState.PROVISIONAL]
 
@@ -348,17 +359,21 @@ class SessionSpeakerState:
 
     # -- identity resolution (spec 5.9, 5.10, 6) ----------------------------- #
 
-    def promote_provisional(self, session_speaker_id: str, reason: str) -> LabelChange | None:
-        """``PROVISIONAL -> SESSION_ANONYMOUS`` once linked to a session centroid."""
+    def promote_provisional(
+        self, session_speaker_id: str, reason: str, *, label: str | None = None
+    ) -> LabelChange | None:
+        """``PROVISIONAL -> SESSION_ANONYMOUS`` once linked to session evidence."""
         speaker = self.get(session_speaker_id)
         if speaker.state is not IdentityState.PROVISIONAL:
             return None
         speaker.machine.transition(IdentityState.SESSION_ANONYMOUS, reason)
-        self._label_counter += 1
+        if label is None:
+            self._label_counter += 1
+            label = SPEAKER_LABEL.format(index=self._label_counter)
         change = LabelChange(
             session_speaker_id=speaker.session_speaker_id,
             previous_label=speaker.display_label,
-            new_label=SPEAKER_LABEL.format(index=self._label_counter),
+            new_label=label,
             reason=reason,
         )
         speaker.display_label = change.new_label
@@ -407,9 +422,19 @@ class SessionSpeakerState:
         """
         unresolved: list[str] = []
         for speaker in self.active:
-            if speaker.state is IdentityState.PROVISIONAL and speaker.prototype is None:
+            if speaker.state is not IdentityState.PROVISIONAL:
+                continue
+            if speaker.prototype is None:
                 speaker.machine.transition(IdentityState.UNKNOWN, "insufficient_evidence")
                 unresolved.append(speaker.session_speaker_id)
+                continue
+            # Without calibrated linking thresholds this must remain a
+            # provisional/unknown outcome. With the reviewed session threshold,
+            # separated evidence can prove one stable *session* speaker even
+            # when no later clean diarization centroid exists. It is promoted,
+            # never silently merged into another identity.
+            if self.config.source_linking.is_calibrated:
+                self.promote_provisional(speaker.session_speaker_id, "separated_evidence_final")
         return unresolved
 
     def drain_label_changes(self) -> list[LabelChange]:

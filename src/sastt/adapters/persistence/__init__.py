@@ -24,6 +24,7 @@ __all__ = [
     "PgVectorVoiceRegistry",
     "PostgresEventStore",
     "PostgresJobStore",
+    "S3ObjectStore",
     "build_pool",
 ]
 
@@ -34,6 +35,10 @@ def __getattr__(name: str) -> object:
         from sastt.adapters.persistence import postgres
 
         return getattr(postgres, name)
+    if name == "S3ObjectStore":
+        from sastt.adapters.storage import S3ObjectStore
+
+        return S3ObjectStore
     if name == "PgVectorVoiceRegistry":
         from sastt.adapters.persistence import pgvector_registry
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -30,6 +32,7 @@ METRIC_VOICE_ID_AMBIGUOUS = "sastt_voice_id_ambiguous_total"
 METRIC_REVISION = "sastt_revision_total"
 METRIC_DEGRADED_SESSION = "sastt_degraded_session_total"
 METRIC_MODEL_ERROR = "sastt_model_error_total"
+METRIC_STREAM_BUFFER_SECONDS = "sastt_stream_buffer_seconds"
 
 #: Label keys that MUST NOT appear on a metric (spec 13.1).
 FORBIDDEN_METRIC_LABELS: frozenset[str] = frozenset(
@@ -78,6 +81,97 @@ class InMemoryMetrics:
 
     def counter_value(self, name: str, **labels: str) -> float:
         return self.counters.get((name, tuple(sorted(labels.items()))), 0.0)
+
+
+def _prometheus_labels(labels: dict[str, str]) -> str:
+    if not labels:
+        return ""
+    escaped = (
+        (key, value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"'))
+        for key, value in sorted(labels.items())
+    )
+    return "{" + ",".join(f'{key}="{value}"' for key, value in escaped) + "}"
+
+
+@dataclass
+class PrometheusMetrics(InMemoryMetrics):
+    """In-process Prometheus exposition without sensitive dynamic labels.
+
+    The existing typed metrics interface remains the only write path, so the
+    forbidden-label guard is applied before anything reaches ``/metrics``.
+    Observations are exported as Prometheus summary count/sum pairs.
+    """
+
+    def render(self) -> str:
+        lines: list[str] = []
+        emitted_types: set[str] = set()
+
+        def declare(name: str, metric_type: str) -> None:
+            if name not in emitted_types:
+                lines.append(f"# TYPE {name} {metric_type}")
+                emitted_types.add(name)
+
+        for (name, label_pairs), value in sorted(self.counters.items()):
+            declare(name, "counter")
+            lines.append(f"{name}{_prometheus_labels(dict(label_pairs))} {value}")
+        for (name, label_pairs), value in sorted(self.gauges.items()):
+            declare(name, "gauge")
+            lines.append(f"{name}{_prometheus_labels(dict(label_pairs))} {value}")
+
+        grouped: dict[tuple[str, tuple[tuple[str, str], ...]], list[float]] = {}
+        for name, value, labels in self.observations:
+            key = (name, tuple(sorted(labels.items())))
+            grouped.setdefault(key, []).append(value)
+        for (name, label_pairs), values in sorted(grouped.items()):
+            declare(name, "summary")
+            label_text = _prometheus_labels(dict(label_pairs))
+            lines.append(f"{name}_count{label_text} {len(values)}")
+            lines.append(f"{name}_sum{label_text} {sum(values)}")
+        return "\n".join(lines) + ("\n" if lines else "")
+
+
+@contextmanager
+def observe_stage(
+    metrics: MetricsSink,
+    stage: str,
+    *,
+    audio_duration_seconds: float | None = None,
+    **labels: str,
+) -> Iterator[None]:
+    """Record a wall-clock stage duration and an RTF when audio duration is known.
+
+    Labels are deliberately low-cardinality operational values such as ``mode``
+    and ``stage``; the shared sink still rejects any sensitive label.
+    """
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        elapsed = max(0.0, time.monotonic() - started)
+        metrics.observe(METRIC_STAGE_DURATION, elapsed, stage=stage, **labels)
+        if audio_duration_seconds and audio_duration_seconds > 0:
+            metrics.observe(
+                METRIC_STAGE_RTF, elapsed / audio_duration_seconds, stage=stage, **labels
+            )
+
+
+def observe_gpu_memory(metrics: MetricsSink, *, device: str = "cuda:0") -> bool:
+    """Export allocated GPU memory when PyTorch/CUDA is present.
+
+    Local fake runs and CPU workers deliberately return ``False`` rather than
+    inventing a utilisation figure.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        index = torch.device(device).index
+        allocated = float(torch.cuda.memory_allocated(index))
+    except (ImportError, RuntimeError, ValueError):
+        return False
+    metrics.gauge(METRIC_GPU_VRAM_BYTES, allocated, device=device)
+    return True
 
 
 class NullMetrics:
@@ -183,6 +277,7 @@ __all__ = [
     "METRIC_SPEAKER_COUNT_ESTIMATE",
     "METRIC_STAGE_DURATION",
     "METRIC_STAGE_RTF",
+    "METRIC_STREAM_BUFFER_SECONDS",
     "METRIC_VOICE_ID_ACCEPT",
     "METRIC_VOICE_ID_AMBIGUOUS",
     "METRIC_VOICE_ID_REJECT",
@@ -190,7 +285,10 @@ __all__ = [
     "CancellationToken",
     "CancelledError",
     "InMemoryMetrics",
+    "PrometheusMetrics",
     "MetricsSink",
     "NullMetrics",
+    "observe_gpu_memory",
+    "observe_stage",
     "tenant_hash",
 ]

@@ -223,7 +223,8 @@ class VoiceIdConfig(_Base):
 class AsrConfig(_Base):
     realtime_model_path: str | None = "/models/faster-whisper-large-v3-turbo"
     final_model_path: str | None = "/models/faster-whisper-large-v3"
-    language: str = "vi"
+    # None delegates language identification to Whisper; callers may pin an ISO code.
+    language: str | None = None
     word_timestamps: bool = True
     compute_type: str = "int8_float16"
     final_rescore: bool = False

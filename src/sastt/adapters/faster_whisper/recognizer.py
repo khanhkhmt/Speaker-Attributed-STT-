@@ -1,6 +1,6 @@
 """faster-whisper ASR and Silero VAD adapters — spec 5.5, 9.
 
-``large-v3-turbo`` with ``language="vi"`` and word timestamps is the realtime
+``large-v3-turbo`` with Whisper language auto-detection and word timestamps is the
 default (spec 0.2, 5.5). Whisper's word probability is a **raw model score** and
 is published as such in ``raw_scores``; it never becomes a calibrated ASR
 confidence (spec 5.5, 0.3).
@@ -32,7 +32,7 @@ class FasterWhisperRecognizer:
         model_version: str,
         device: str = "auto",
         compute_type: str = DEFAULT_COMPUTE_TYPE,
-        language: str = "vi",
+        language: str | None = None,
         beam_size: int = 5,
         min_word_ms: int = 20,
     ) -> None:

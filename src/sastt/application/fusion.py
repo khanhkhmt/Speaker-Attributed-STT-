@@ -7,12 +7,16 @@ two segments with overlapping timestamps (spec 0.1.7). Confidence values stay
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Protocol
 
 from sastt.application.session_state import SessionSpeakerState
 from sastt.config import SasttConfig
 from sastt.domain.audio import TimeInterval, seconds_to_ms
-from sastt.domain.errors import SchemaInvariantError
+from sastt.domain.errors import ConfigurationError, SchemaInvariantError
 from sastt.domain.events import new_id
 from sastt.domain.speakers import IdentityStatus, SpeakerTurn
 from sastt.domain.transcript import (
@@ -23,6 +27,15 @@ from sastt.domain.transcript import (
 )
 
 SENTENCE_FINAL = (".", "?", "!", "…")
+
+
+class ConfidenceCalibrator(Protocol):
+    """A versioned release that maps raw model scores to public confidence."""
+
+    @property
+    def calibration_version(self) -> str | None: ...
+
+    def calibrate(self, raw_scores: dict[str, float]) -> Confidences: ...
 
 
 class NullConfidenceCalibrator:
@@ -39,6 +52,84 @@ class NullConfidenceCalibrator:
 
     def calibrate(self, raw_scores: dict[str, float]) -> Confidences:
         return Confidences(status="uncalibrated")
+
+
+@dataclass(frozen=True)
+class FileConfidenceCalibrator:
+    """Confidence calibration release loaded from reviewed JSON evidence.
+
+    Each configured component supplies a raw score key and logistic parameters
+    ``a``/``b``. Missing raw evidence stays null; a release never fills values
+    by guessing.  The release id is included in every segment provenance.
+    """
+
+    release_id: str
+    components: dict[str, tuple[str, float, float]]
+
+    @property
+    def calibration_version(self) -> str:
+        return self.release_id
+
+    @classmethod
+    def from_path(cls, path: str | Path) -> FileConfidenceCalibrator:
+        release_path = Path(path)
+        try:
+            raw: Any = json.loads(release_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ConfigurationError(
+                f"could not load confidence calibration {release_path}: {exc}"
+            ) from exc
+        if not isinstance(raw, dict) or not isinstance(raw.get("release_id"), str):
+            raise ConfigurationError("calibration release requires a string release_id")
+        items = raw.get("components")
+        if not isinstance(items, dict) or not items:
+            raise ConfigurationError("calibration release requires non-empty components")
+        components: dict[str, tuple[str, float, float]] = {}
+        allowed = {"asr", "diarization", "linking", "voice_id", "overlap"}
+        for component, item in items.items():
+            if component not in allowed or not isinstance(item, dict):
+                raise ConfigurationError(f"unsupported calibration component {component!r}")
+            raw_key, a, b = item.get("raw_key"), item.get("a"), item.get("b")
+            if (
+                not isinstance(raw_key, str)
+                or not isinstance(a, (int, float))
+                or not isinstance(b, (int, float))
+            ):
+                raise ConfigurationError(
+                    f"calibration component {component!r} requires raw_key, a and b"
+                )
+            components[component] = (raw_key, float(a), float(b))
+        return cls(release_id=raw["release_id"], components=components)
+
+    def calibrate(self, raw_scores: dict[str, float]) -> Confidences:
+        values: dict[str, float | None] = {
+            "asr": None,
+            "diarization": None,
+            "linking": None,
+            "voice_id": None,
+            "overlap": None,
+        }
+        for component, (raw_key, a, b) in self.components.items():
+            score = raw_scores.get(raw_key)
+            if score is None or not math.isfinite(score):
+                continue
+            clipped = max(-60.0, min(60.0, a * score + b))
+            values[component] = 1.0 / (1.0 + math.exp(-clipped))
+        available = [value for value in values.values() if value is not None]
+        return Confidences(
+            asr=values["asr"],
+            diarization=values["diarization"],
+            linking=values["linking"],
+            voice_id=values["voice_id"],
+            overlap=values["overlap"],
+            overall=sum(available) / len(available) if available else None,
+            status="calibrated",
+        )
+
+
+def load_confidence_calibrator(path: str | Path | None) -> ConfidenceCalibrator:
+    """Return null confidence unless an explicit reviewed release is configured."""
+    return FileConfidenceCalibrator.from_path(path) if path else NullConfidenceCalibrator()
 
 
 @dataclass(frozen=True)
@@ -92,7 +183,7 @@ class FusionEngine:
         config: SasttConfig,
         model_versions: ModelVersions,
         *,
-        calibrator: NullConfidenceCalibrator | None = None,
+        calibrator: ConfidenceCalibrator | None = None,
         max_pause_ms: int | None = None,
     ) -> None:
         self.session_id = session_id
@@ -294,8 +385,11 @@ def identity_status_of(state: SessionSpeakerState, session_speaker_id: str) -> I
 
 
 __all__ = [
+    "ConfidenceCalibrator",
+    "FileConfidenceCalibrator",
     "FusionEngine",
     "NullConfidenceCalibrator",
+    "load_confidence_calibrator",
     "WordGroup",
     "dedup_words",
     "identity_status_of",

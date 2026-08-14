@@ -543,6 +543,7 @@ class _RegistryEntry:
     identity_id: str
     display_name: str
     prototypes: list[SpeakerPrototype] = field(default_factory=list)
+    accepted_speech_ms: int = 0
     consent_ref: str | None = None
 
 
@@ -612,13 +613,7 @@ class FakeVoiceRegistry:
             if ok:
                 accepted.append(embedding)
 
-        total_speech = sum(e.speech_duration_ms for e in accepted)
-        policy_reasons: list[str] = []
-        if len(accepted) < self.minimum_clips:
-            policy_reasons.append("fewer_than_minimum_clips")
-        if total_speech < self.minimum_total_speech_ms:
-            policy_reasons.append("insufficient_total_speech")
-        meets_policy = not policy_reasons
+        batch_speech = sum(e.speech_duration_ms for e in accepted)
 
         entry = self._tenants.setdefault(tenant_id, {}).setdefault(
             identity_id,
@@ -630,15 +625,21 @@ class FakeVoiceRegistry:
         # Spec 5.10: store several prototypes, not one averaged centroid.
         for embedding in accepted:
             entry.prototypes.append(SpeakerPrototype.from_embedding(identity_id, embedding))
+        entry.accepted_speech_ms += batch_speech
 
+        policy_reasons: list[str] = []
+        if len(entry.prototypes) < self.minimum_clips:
+            policy_reasons.append("fewer_than_minimum_clips")
+        if entry.accepted_speech_ms < self.minimum_total_speech_ms:
+            policy_reasons.append("insufficient_total_speech")
         return EnrollmentReport(
             identity_id=identity_id,
             accepted_clips=len(accepted),
             rejected_clips=len(embeddings) - len(accepted),
-            total_speech_ms=total_speech,
+            total_speech_ms=entry.accepted_speech_ms,
             prototype_count=len(entry.prototypes),
             embedding_model_version=self._model_version,
-            meets_policy=meets_policy,
+            meets_policy=not policy_reasons,
             clips=tuple(clips),
             reasons=tuple(policy_reasons),
         )

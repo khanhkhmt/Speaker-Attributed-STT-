@@ -4,7 +4,7 @@
 |---|---|
 | Cập nhật | 14/08/2026 |
 | Spec tham chiếu | [`production-technical-spec.md`](production-technical-spec.md) v1.0 |
-| Milestone hiện tại | M0 xong · M1 ~95% · **M2 ~70%** · **M3 ~60%** — hạ tầng fullstack đã chạy |
+| Milestone hiện tại | M0 xong · M1 **xong** · **M2 ~85%** · **M3 ~75%** · **M4 ~35%** · **M5 ~30%** — phần còn lại là gate cần model/GPU/corpus thật |
 | Engine mặc định | `fake` (M0). Đặt `SASTT_ENGINE=real` để dùng adapter model thật |
 
 Tài liệu này ghi **tình trạng thực tế** của repo. Mọi con số đều lấy từ lần chạy
@@ -16,10 +16,10 @@ thật, không ước lượng.
 |---|---|---|
 | M0 — Foundation & contracts | package `sastt`, config validation, domain models, ports, JSON Schema v2, fake adapters, state machine, revision/idempotency, CI | **xong** |
 | M1 — Offline 2-speaker path | decode/resample, adapter pyannote + faster-whisper + MossFormer2 + CAM++, pin manifest, smoke test | **~95%** — DoD pass; còn nợ mục 10 |
-| M2 — Linking & Voice ID | pgvector registry, enrollment quality, deletion/audit | **~70%** — registry + schema + audit chạy thật; chưa nối vào API |
-| M3 — Near-realtime | queue/worker, backpressure, latency instrumentation | **~60%** — WebSocket/revision/replay chạy trên model thật; Redis queue + worker chạy thật; chưa có autoscale/metric export |
-| M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | chưa bắt đầu |
-| M5 — Production hardening | benchmark corpus, calibrator, load/soak, SBOM, capacity | chưa bắt đầu |
+| M2 — Linking & Voice ID | pgvector registry, enrollment quality, deletion/audit | **~85%** — API local tạo/enroll/xem/xóa đã chạy; persistent pgvector cần được chọn khi deploy |
+| M3 — Near-realtime | queue/worker, backpressure, latency instrumentation | **~75%** — WebSocket/revision/replay, bounded RAM ring + disk spool final pass, Prometheus stage/RTF/GPU-optional metrics; chưa có OTel, autoscale hay SLO đo trên baseline |
+| M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~35%** — router + feature gate + adapter SepFormer 3mix 8 kHz đã có; chưa pre-stage/benchmark checkpoint, chưa có counter production/GSS/WeSep |
+| M5 — Production hardening | benchmark corpus, calibrator, load/soak, SBOM, capacity | **~30%** — calibrator release JSON, CLI benchmark/capacity/SBOM và guardrail test đã có; corpus, calibration release ký duyệt, soak/load và capacity evidence chưa có |
 
 ## 2. Gate chất lượng — lần chạy gần nhất
 
@@ -27,8 +27,8 @@ thật, không ước lượng.
 |---|---|---|
 | Lint | `ruff check src tests deploy` | pass |
 | Format | `ruff format --check src tests deploy` | pass |
-| Type | `mypy` (strict) | pass, 53 file |
-| Test thường | `pytest` | **206 passed**, 57 deselected |
+| Type | `mypy` (strict) | pass, 61 source file |
+| Test thường | `pytest` | **223 passed**, 57 deselected (lần kiểm tra 14/08/2026; không gộp model/load/db) |
 | Test model | `pytest -m model` | **32 passed, 0 skipped** |
 | Test hạ tầng | `pytest -m db` | **21 passed** (Postgres + Redis thật) |
 | Coverage | `--cov=sastt.domain --cov=sastt.application` | 88% (spec 16.3 yêu cầu ≥85%) |
@@ -49,7 +49,7 @@ Pin bằng `deploy/prestage_models.py`; runtime chỉ mount `/models` read-only.
 | `3d_speaker_campplus` | `iic/speech_campplus_sv_zh_en_16k-common_advanced` (ModelScope) | `v1.0.0` | 27 MiB | pinned + verified |
 | `pyannote-community-1` | `pyannote/speaker-diarization-community-1` | `3533c8cf…` | 33 MiB | pinned + verified |
 | `pyannote_segmentation_3.0` | `pyannote/segmentation-3.0` | `e66f3d3b…` | 5.8 MiB | pinned + verified |
-| `sepformer_libri3mix` | `speechbrain/sepformer-libri3mix` | — | — | beta, chưa cần (M4) |
+| `sepformer_libri3mix` | `speechbrain/sepformer-libri3mix` | — | — | adapter M4 đã có, nhưng weight chưa pre-stage/verify; chỉ chạy khi bật `three_source_beta` |
 | `multidecoder_dprnn` | `JunzheJosephZhu/MultiDecoderDPRNN` | — | — | `deny` production (spec 20) |
 | `gpu_gss`, `wesep` | — | — | — | không có weights / phase 2 |
 
@@ -171,8 +171,10 @@ lời được spec 21.6 (turbo hay large-v3 cho tiếng Việt) — cần bench
 | Job/Event store | `PostgresJobStore`, `PostgresEventStore` |
 | Voice registry | `PgVectorVoiceRegistry` — HNSW cosine, tenant-scoped, audit |
 | Queue | `RedisTaskQueue` — at-least-once, backpressure, requeue task của worker chết |
-| Worker | `sastt.workers.offline_worker` — process riêng, SIGTERM graceful |
-| Container | 5 Dockerfile spec 11.1 + `docker-compose.yml` (9 service) |
+| Worker | `sastt.workers.offline_worker` — process riêng, SIGTERM graceful, đọc `audio_key` từ object storage |
+| Object storage | `S3ObjectStore` (S3/MinIO), tenant prefix, SSE request; compose có `minio-init` tạo bucket trước ingest |
+| Metrics | `/metrics` Prometheus text exposition; guard cấm label chứa text/tên/embedding vẫn áp dụng |
+| Container | 5 Dockerfile spec 11.1 + `docker-compose.yml` (có Redis/Postgres/MinIO) |
 
 Test hạ tầng chạy trên Postgres/Redis thật: **21 passed** (`pytest -m db`).
 
@@ -189,10 +191,14 @@ Test hạ tầng chạy trên Postgres/Redis thật: **21 passed** (`pytest -m d
     5819-7319   overlap=False  Speaker 1
 ```
 
-**Chưa xong:** Docker chưa build được ở máy này (không có daemon) nên Dockerfile
-và compose mới chỉ được kiểm tra cú pháp; API vẫn chạy job in-process thay vì
-đẩy vào queue; chưa có auth/TLS; chưa export metric ra Prometheus; MinIO/object
-storage mới khai báo trong compose, chưa có adapter.
+**Cập nhật wiring:** đặt `SASTT_JOB_RUNNER=queue` khiến API tạo job idempotent
+trong PostgreSQL, lưu audio theo key `jobs/<job_id>/input` ở S3/MinIO rồi enqueue
+`speaker.batch`; worker chỉ nhận object key, không nhận bytes hoặc local path. Test
+API khóa SHA-256 input, tenant scope và queue payload; `/metrics` export theo
+Prometheus. Docker/compose vẫn **chưa build/chạy thử được ở máy này** vì không có
+Docker daemon, nên không được coi đây là bằng chứng fullstack GPU/MinIO đã chạy.
+
+**Vẫn chưa xong:** auth/TLS production, OTel tracing, load/soak và benchmark.
 
 ## 7. Scenario acceptance (spec 16.2)
 
@@ -207,13 +213,14 @@ Chạy trên fake adapters, không tải weights:
 | S11 | separator lỗi | pass — retry crop nhỏ hơn rồi degraded, không mất audio |
 | S12 | realtime reconnect | pass — replay đúng, không trùng final |
 | S13 | retry idempotent | pass |
-| S05–S10, S14, S15 | Voice ID, đa kênh, model revision, cross-tenant | chờ M2/M4 |
+| S05–S07, S15 | enrollment quality, reject uncalibrated, tenant isolation | API local pass; Voice ID inference vẫn fail-closed tới khi có calibration |
+| S08 | 3-source/beta | route/feature-gate + fake 3-source wiring đã có; acceptance model thật chờ pre-stage SepFormer |
+| S09–S10, S14 | đa kênh/GSS, WeSep/model revision | chưa triển khai adapter production; giữ feature gate fail-closed |
 
 ## 8. Lệch spec — đã rào, không giấu
 
 | Chỗ lệch | Lý do | Rào chắn |
 |---|---|---|
-| Job chạy in-process, chưa có queue/worker | topology spec 11.1/11.3 thuộc M3 | ghi rõ trong `api/http.py` |
 | Tenant lấy từ header `X-Tenant-Id` | auth thật chưa có | `create_app(environment=production)` raise ngay (spec 14.2) |
 | Demo console `web/` + route `/v1/demo/*` | công cụ dev để test tay | không thuộc cây spec 17; banner luôn nói engine đang dùng |
 | Threshold linking trong demo được set sẵn | spec để `null` và fail closed | chỉ áp trong `create_app` demo, config gốc vẫn `null` |
@@ -224,9 +231,7 @@ Chạy trên fake adapters, không tải weights:
 
 - **Chưa tách image theo worker** (spec 11.1). Xung đột numpy khi cài chung
   pyannote + clearvoice là bằng chứng cho việc phải tách ở production.
-- **Chưa có calibration**. Mọi confidence là `null` với
-  `confidence_status="uncalibrated"`; threshold linking/Voice ID vẫn `null` và
-  fail closed (spec 5.10, 18 rule 7).
+- **Chưa có calibration release được duyệt.** Code đã có `FileConfidenceCalibrator` đọc release JSON versioned, nhưng config mặc định vẫn không trỏ release; do đó mọi output mặc định vẫn `null` + `confidence_status="uncalibrated"` và Voice ID fail closed.
 - **Chưa có benchmark corpus** 10–20 giờ (spec 16.4) → chưa được phát biểu bất kỳ
   con số accuracy nào.
 - **OSD adapter đã chạy thật** nhưng chưa calibration: pyannote.audio 4.x bỏ
@@ -245,16 +250,33 @@ Chạy trên fake adapters, không tải weights:
   `clearvoice` kéo tensor sang GPU khác. Đúng cho một worker một GPU (spec 11.1),
   nhưng khi tách worker thì device phải lấy từ config chứ không hard-code.
 
-## 10. Còn nợ để đóng M1
+## 10. Nợ còn lại sau khi đóng M1
 
 | Việc | Vì sao chưa xong |
 |---|---|
-| **API vẫn chạy job in-process** | queue + worker đã chạy thật, nhưng `api/http.py` chưa đẩy job vào Redis. Đây là việc nối dây còn lại của spec 11.1 |
-| **Docker chưa build thử** | máy phát triển không có Docker daemon; 5 Dockerfile + compose mới chỉ kiểm tra cú pháp |
+| **Compose chưa build/chạy thử** | môi trường hiện tại không có Docker daemon/CLI; cần chạy integration thật với Postgres, Redis, MinIO và GPU image |
 | **Chưa có auth/TLS** | tenant vẫn lấy từ header `X-Tenant-Id`; `create_app(environment=production)` từ chối khởi động (spec 14.1–14.2) |
-| **Chưa export metric** | chỉ `InMemoryMetrics`; spec 13.1 cần Prometheus/OTel để autoscale theo queue age |
-| **Chưa có object storage adapter** | MinIO đã khai báo trong compose nhưng chưa có adapter `ObjectStore` dùng S3 |
-| **Chưa có load test** | RTF 0.297 là *một* lần chạy; spec 3 yêu cầu xác nhận bằng load test (spec 16.1.6), gồm p95, soak 30–60 phút và giới hạn VRAM/GPU 80% |
+| **Chưa có OTel tracing/autoscale** | `/metrics` Prometheus đã có; stream ghi stage duration/RTF, buffer và GPU VRAM khi PyTorch/CUDA hiện diện, nhưng chưa có trace exporter hay policy autoscale queue-age |
+| **Chưa có load/soak evidence** | `deploy/capacity_report.py` tính p95 và không pass nếu thiếu số đo; còn RTF/latency/VRAM 30–60 phút phải chạy trên baseline GPU thật |
+| **Chưa có benchmark corpus/release** | `deploy/benchmark_report.py` và confidence calibration release đã có, nhưng corpus 10–20h + duyệt threshold/model release chưa có |
+| **SBOM chưa vào CI/release** | `deploy/generate_sbom.py` tạo inventory dependency + model manifest local; cần artifact ký/scan trong pipeline release |
+| **Registry persistent chưa nối vào app** | API Voice Registry chạy local bằng registry in-memory để không phụ thuộc Docker; deploy cần inject `PgVectorVoiceRegistry` + auth context thay vì state local |
+
+## 10.1 Artefact M3–M5 mới
+
+- `StreamingSession` chỉ giữ ring buffer trong RAM; PCM đầy đủ được spool tạm để final pass, nên kiểm thử có thể chứng minh bộ đệm RAM bị chặn.
+- ASR mặc định Whisper auto-detect; console/API có language hint per-job (`auto`, `vi`, `en`) và đưa hint vào `config_version`, tránh ép file tiếng Anh sang tiếng Việt.
+- `sastt.adapters.speechbrain.SepFormerLibri3MixSeparator` là adapter beta K=3, yêu cầu thư mục weight local và `three_source_beta`; không tải model ở runtime.
+- `FileConfidenceCalibrator` chỉ xuất confidence khi có release JSON hợp lệ; chưa cấu hình release thì vẫn null/fail-closed.
+- `deploy/benchmark_report.py`, `deploy/capacity_report.py`, `deploy/generate_sbom.py` tạo evidence local. Report capacity đánh dấu `pending` khi thiếu sample, không tự xác nhận SLO.
+
+Ví dụ:
+
+```bash
+python3 deploy/generate_sbom.py --output artifacts/sbom.json
+python3 deploy/benchmark_report.py evidence.jsonl --release-id bench_2026_08 --output artifacts/benchmark.json
+python3 deploy/capacity_report.py load-measurements.json --output artifacts/capacity.json
+```
 
 ## 11. Chạy thử
 
@@ -292,8 +314,8 @@ curl "http://127.0.0.1:8000/v1/jobs/<job_id>/result" -H 'X-Tenant-Id: tenant-dem
 ```
 
 ```bash
-pytest                 # 206 test, không tải weights, không cần HF token
-pytest -m model        # 12 test, cần weights trong /models
+pytest                 # test thường, không tải weights, không cần HF token
+pytest -m model        # 32 test, cần weights trong /models
 ruff check src tests deploy && ruff format --check src tests deploy && mypy
 python3 deploy/prestage_models.py --list      # xem backend nào đã pin
 ```

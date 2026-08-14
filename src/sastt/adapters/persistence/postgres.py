@@ -156,9 +156,16 @@ class PostgresJobStore:
         return job
 
     def save_result(
-        self, tenant_id: str, job_id: str, segments: list[dict[str, Any]], session_id: str
+        self,
+        tenant_id: str,
+        job_id: str,
+        segments: list[dict[str, Any]],
+        session_id: str,
+        *,
+        warnings: list[str] | None = None,
+        degraded: bool = False,
     ) -> int:
-        """Persist the canonical final segments (spec 10.2 ``transcript_segments``)."""
+        """Persist canonical segments and their durable outcome metadata."""
         with self._pool.connection() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "DELETE FROM transcript_segments WHERE job_id = %s AND tenant_id = %s",
@@ -185,7 +192,28 @@ class PostgresJobStore:
                         json.dumps(segment),
                     ),
                 )
+            cursor.execute(
+                """
+                UPDATE jobs SET warnings = %s, degraded_mode = %s, updated_at = now()
+                WHERE id = %s AND tenant_id = %s
+                """,
+                (json.dumps(warnings or []), degraded, job_id, tenant_id),
+            )
         return len(segments)
+
+    def set_error(self, tenant_id: str, job_id: str, error_code: str) -> JobRecord:
+        """Store a public error code before moving the job to ``FAILED``."""
+        job = self.get(tenant_id, job_id)
+        job.error_code = error_code
+        with self._pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE jobs SET error_code = %s, updated_at = now()
+                WHERE id = %s AND tenant_id = %s
+                """,
+                (error_code, job_id, tenant_id),
+            )
+        return job
 
     def load_result(self, tenant_id: str, job_id: str) -> list[dict[str, Any]]:
         with self._pool.connection() as connection, connection.cursor() as cursor:

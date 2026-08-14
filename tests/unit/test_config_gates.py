@@ -35,7 +35,7 @@ class TestDefaultConfig:
         assert base_config.audio.canonical_sample_rate == 16000
         assert base_config.streaming.frame_ms == 40
         assert base_config.separation.two_source_backend == "mossformer2_ss_16k"
-        assert base_config.asr.language == "vi"
+        assert base_config.asr.language is None
 
     def test_thresholds_are_null_until_calibration(self, base_config: SasttConfig) -> None:
         assert base_config.source_linking.accept_threshold is None

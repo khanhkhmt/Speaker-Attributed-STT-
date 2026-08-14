@@ -98,13 +98,6 @@ class PgVectorVoiceRegistry:
             if not reasons:
                 accepted.append(embedding)
 
-        total_speech = sum(e.speech_duration_ms for e in accepted)
-        policy_reasons: list[str] = []
-        if len(accepted) < self.minimum_clips:
-            policy_reasons.append("fewer_than_minimum_clips")
-        if total_speech < self.minimum_total_speech_ms:
-            policy_reasons.append("insufficient_total_speech")
-
         with self._pool.connection() as connection, connection.cursor() as cursor:
             # Spec 14.4: enrollment needs a consent reference. There is no
             # sensible default, so the caller's value is stored verbatim.
@@ -149,13 +142,14 @@ class PgVectorVoiceRegistry:
                 )
             cursor.execute(
                 """
-                SELECT count(*) FROM voice_templates
+                SELECT count(*), COALESCE(sum(speech_ms), 0) FROM voice_templates
                 WHERE identity_id = %s AND tenant_id = %s AND model_release_id = %s
                 """,
                 (identity_id, tenant_id, self._model_version),
             )
             row = cursor.fetchone()
             prototype_count = int(row[0]) if row else 0
+            total_speech = int(row[1]) if row else 0
             self._audit(
                 cursor,
                 tenant_id,
@@ -164,6 +158,11 @@ class PgVectorVoiceRegistry:
                 details={"accepted": len(accepted), "rejected": len(embeddings) - len(accepted)},
             )
 
+        policy_reasons: list[str] = []
+        if prototype_count < self.minimum_clips:
+            policy_reasons.append("fewer_than_minimum_clips")
+        if total_speech < self.minimum_total_speech_ms:
+            policy_reasons.append("insufficient_total_speech")
         return EnrollmentReport(
             identity_id=identity_id,
             accepted_clips=len(accepted),

@@ -66,6 +66,11 @@ class InMemoryJobStore:
         job.transition(state)
         return job
 
+    def set_error(self, tenant_id: str, job_id: str, error_code: str) -> JobRecord:
+        job = self.get(tenant_id, job_id)
+        job.error_code = error_code
+        return job
+
 
 class InMemoryEventStore:
     """``EventStore`` port implementation with a bounded replay window."""

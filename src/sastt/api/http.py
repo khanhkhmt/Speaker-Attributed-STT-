@@ -18,28 +18,41 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import io
 import os
+import re
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from sastt.adapters.fake.scenario import Scenario
-from sastt.adapters.persistence import InMemoryJobStore
+from sastt.adapters.persistence import InMemoryJobStore, InMemoryObjectStore
 from sastt.adapters.persistence.memory import IdempotencyConflictError
+from sastt.adapters.queue.redis_queue import QUEUE_SPEAKER_BATCH, RedisTaskQueue, build_client
+from sastt.adapters.storage import S3ObjectStore
+from sastt.application.fusion import ConfidenceCalibrator, load_confidence_calibrator
 from sastt.application.offline_pipeline import OfflinePipeline, OfflineResult, PipelineAdapters
 from sastt.application.streaming_pipeline import StreamingSession
 from sastt.config import Environment, SasttConfig, load_config, load_manifests
-from sastt.domain.audio import CANONICAL_SAMPLE_RATE, seconds_to_ms
-from sastt.domain.errors import ConfigurationError, ErrorCode, ModelNotReadyError, SasttError
+from sastt.domain.audio import CANONICAL_SAMPLE_RATE, AudioBuffer, TimeInterval, seconds_to_ms
+from sastt.domain.errors import (
+    ConfigurationError,
+    ErrorCode,
+    ModelNotReadyError,
+    SasttError,
+    TenantAccessDeniedError,
+)
 from sastt.domain.events import JobRecord, JobState, new_id
 from sastt.domain.transcript import render_transcript
-from sastt.observability import CallContext, InMemoryMetrics, tenant_hash
+from sastt.observability import CallContext, MetricsSink, PrometheusMetrics, tenant_hash
+from sastt.ports.registry import VoiceRegistry
+from sastt.ports.storage import JobStore, ObjectStore
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WEB_DIR = REPO_ROOT / "web"
@@ -87,6 +100,16 @@ def build_fake_engine(config: SasttConfig) -> Engine:
             recognizer=FakeSpeechRecognizer(scenario),
             embedder=FakeSpeakerEmbedder(scenario.speakers),
             separator=FakeSpeechSeparator(scenario.speakers, scenario=scenario),
+            three_source_separator=(
+                FakeSpeechSeparator(
+                    scenario.speakers,
+                    backend="fake_three_source",
+                    supported_source_counts=(3,),
+                    scenario=scenario,
+                )
+                if config.product.three_source_beta
+                else None
+            ),
         )
 
     return Engine(
@@ -114,6 +137,7 @@ def build_real_engine(config: SasttConfig) -> Engine:
     from sastt.adapters.ffmpeg import FfmpegAudioDecoder
     from sastt.adapters.pyannote import PyannoteDiarizer, PyannoteOverlapDetector
     from sastt.adapters.speaker3d import CamPlusPlusEmbedder
+    from sastt.adapters.speechbrain import SepFormerLibri3MixSeparator
 
     manifests = load_manifests(REPO_ROOT / "model-manifests")
 
@@ -155,6 +179,14 @@ def build_real_engine(config: SasttConfig) -> Engine:
         path(config.separation.two_source_model_path, "two-source separation"),
         separator_version=version("mossformer2_ss_16k"),
     )
+    three_source_separator = (
+        SepFormerLibri3MixSeparator(
+            path(config.separation.three_source_model_path, "three-source separation"),
+            separator_version=version("sepformer_libri3mix"),
+        )
+        if config.product.three_source_beta
+        else None
+    )
     bundle = PipelineAdapters(
         decoder=FfmpegAudioDecoder(max_hours=config.audio.max_file_hours),
         vad=SileroVoiceActivityDetector(),
@@ -163,6 +195,7 @@ def build_real_engine(config: SasttConfig) -> Engine:
         recognizer=recognizer,
         embedder=embedder,
         separator=separator,
+        three_source_separator=three_source_separator,
     )
 
     unpinned = [name for name, manifest in manifests.items() if not manifest.is_pinned]
@@ -188,11 +221,20 @@ class AppState:
     config: SasttConfig
     engine: Engine
     environment: Environment
-    jobs: InMemoryJobStore = field(default_factory=InMemoryJobStore)
+    jobs: JobStore = field(default_factory=InMemoryJobStore)
+    objects: ObjectStore = field(default_factory=InMemoryObjectStore)
+    task_queue: RedisTaskQueue | None = None
+    registry: VoiceRegistry | None = None
+    identity_metadata: dict[tuple[str, str], dict[str, str | None]] = field(default_factory=dict)
     results: dict[str, OfflineResult] = field(default_factory=dict)
     job_scenarios: dict[str, str] = field(default_factory=dict)
+    job_audio_keys: dict[str, str] = field(default_factory=dict)
+    job_languages: dict[str, str | None] = field(default_factory=dict)
     sessions: dict[str, StreamingSession] = field(default_factory=dict)
-    metrics: InMemoryMetrics = field(default_factory=InMemoryMetrics)
+    metrics: MetricsSink = field(default_factory=PrometheusMetrics)
+    calibrator: ConfidenceCalibrator = field(
+        default_factory=lambda: load_confidence_calibrator(None)
+    )
 
 
 def available_scenarios() -> dict[str, Path]:
@@ -246,6 +288,10 @@ def create_app(
     *,
     engine_name: str | None = None,
     environment: Environment | str = Environment.DEVELOPMENT,
+    jobs: JobStore | None = None,
+    objects: ObjectStore | None = None,
+    task_queue: RedisTaskQueue | None = None,
+    registry: VoiceRegistry | None = None,
 ) -> FastAPI:
     env = environment if isinstance(environment, Environment) else Environment(environment)
     engine_name = engine_name or os.environ.get("SASTT_ENGINE", "fake")
@@ -266,8 +312,23 @@ def create_app(
         )
 
     engine = build_fake_engine(config) if engine_name == "fake" else build_real_engine(config)
+    if os.environ.get("SASTT_JOB_RUNNER") == "queue" and task_queue is None:
+        from sastt.adapters.persistence.postgres import PostgresJobStore, build_pool
+
+        jobs = PostgresJobStore(build_pool(os.environ.get("DATABASE_URL")))
+        objects = S3ObjectStore.from_environment()
+        task_queue = RedisTaskQueue(build_client(os.environ.get("REDIS_URL")))
     app = FastAPI(title="Speaker-Attributed STT", version="0.1.0")
-    app.state.sastt = AppState(config=config, engine=engine, environment=env)
+    app.state.sastt = AppState(
+        config=config,
+        engine=engine,
+        environment=env,
+        jobs=jobs or InMemoryJobStore(),
+        objects=objects or InMemoryObjectStore(),
+        task_queue=task_queue,
+        registry=registry or _build_local_registry(engine, config),
+        calibrator=load_confidence_calibrator(config.confidence.calibration_path),
+    )
 
     from sastt.api.websocket import register_websocket_routes
 
@@ -275,7 +336,13 @@ def create_app(
 
     @app.exception_handler(SasttError)
     async def _domain_error(_: Request, exc: SasttError) -> JSONResponse:
-        status = 503 if exc.code is ErrorCode.MODEL_NOT_READY else 400
+        status = (
+            503
+            if exc.code is ErrorCode.MODEL_NOT_READY
+            else 429
+            if exc.code is ErrorCode.QUEUE_OVERLOADED
+            else 400
+        )
         return JSONResponse(status_code=status, content=exc.to_dict())
 
     # -- probes (spec 11.2) -------------------------------------------------- #
@@ -283,6 +350,14 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
         return {"status": "ok"}
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> PlainTextResponse:
+        """Prometheus text exposition for the metrics named in spec 13.1."""
+        state: AppState = app.state.sastt
+        if isinstance(state.metrics, PrometheusMetrics):
+            return PlainTextResponse(state.metrics.render(), media_type="text/plain; version=0.0.4")
+        return PlainTextResponse("", media_type="text/plain; version=0.0.4")
 
     @app.get("/readyz")
     async def readyz() -> dict[str, Any]:
@@ -344,6 +419,8 @@ def create_app(
             raise HTTPException(status_code=400, detail="Idempotency-Key header is required")
         state: AppState = request.app.state.sastt
 
+        requested_language = _requested_asr_language(payload.get("language"))
+        job_config = _config_with_asr_language(state.config, requested_language)
         scenario_name = payload.get("scenario")
         scenario: Scenario | None = None
         if scenario_name:
@@ -371,15 +448,36 @@ def create_app(
             job, created = state.jobs.create_or_get(
                 tenant_id=tenant_id,
                 idempotency_key=idempotency_key,
-                input_hash=str(hash(audio)),
-                config_version=state.config.config_version,
+                input_hash=hashlib.sha256(audio).hexdigest(),
+                config_version=job_config.config_version,
             )
         except IdempotencyConflictError as exc:
             raise HTTPException(status_code=409, detail=exc.message) from exc
 
         if created:
             state.job_scenarios[job.job_id] = str(scenario_name or "upload")
-            _run_job(state, job, scenario, audio, tenant_id)
+            state.job_languages[job.job_id] = requested_language
+            if state.task_queue is None:
+                _run_job(state, job, scenario, audio, tenant_id, job_config)
+            else:
+                audio_key = f"jobs/{job.job_id}/input"
+                state.objects.put(tenant_id, audio_key, audio)
+                try:
+                    state.task_queue.enqueue(
+                        QUEUE_SPEAKER_BATCH,
+                        tenant_id=tenant_id,
+                        job_id=job.job_id,
+                        payload={
+                            "audio_key": audio_key,
+                            "scenario": scenario_name,
+                            "language": requested_language,
+                        },
+                    )
+                except SasttError:
+                    state.objects.delete(tenant_id, audio_key)
+                    state.jobs.update_state(tenant_id, job.job_id, JobState.CANCELLED)
+                    raise
+                state.job_audio_keys[job.job_id] = audio_key
         return _job_view(state, job, created)
 
     @app.get("/v1/jobs/{job_id}")
@@ -396,8 +494,30 @@ def create_app(
         state: AppState = request.app.state.sastt
         job = state.jobs.get(tenant_id, job_id)
         result = state.results.get(job.job_id)
-        if result is None:
+        if result is None and not job.is_terminal:
             raise HTTPException(status_code=409, detail=f"job is {job.state.value}, not finished")
+        if result is None:
+            loader = getattr(state.jobs, "load_result", None)
+            if loader is None:
+                raise HTTPException(
+                    status_code=409, detail=f"job is {job.state.value}, not finished"
+                )
+            segments = loader(tenant_id, job.job_id)
+            if not segments:
+                raise HTTPException(
+                    status_code=409, detail=f"job is {job.state.value}, not finished"
+                )
+            return {
+                "job_id": job.job_id,
+                "engine": state.engine.name,
+                "schema_version": "2.0",
+                "state": job.state.value,
+                "config_version": job.config_version,
+                "warnings": job.warnings,
+                "degraded_mode": job.degraded,
+                "segments": segments,
+                "text": render_transcript_from_public_segments(segments),
+            }
         return {
             "job_id": job.job_id,
             "engine": state.engine.name,
@@ -419,9 +539,104 @@ def create_app(
         state: AppState = request.app.state.sastt
         job = state.jobs.get(tenant_id, job_id)
         state.results.pop(job.job_id, None)
+        audio_key = state.job_audio_keys.pop(job.job_id, None)
+        if audio_key:
+            state.objects.delete(tenant_id, audio_key)
         if not job.is_terminal:
-            job.transition(JobState.CANCELLED)
+            job = state.jobs.update_state(tenant_id, job.job_id, JobState.CANCELLED)
         return {"job_id": job.job_id, "state": job.state.value}
+
+    # -- Voice registry (spec 8.3, FR-014) ------------------------------------ #
+
+    @app.get("/v1/voice-identities")
+    async def list_voice_identities(
+        request: Request, tenant_id: str = Depends(dev_tenant)
+    ) -> dict[str, Any]:
+        """List only the local tenant's voice identities for the management UI."""
+        state: AppState = request.app.state.sastt
+        identities = [
+            _voice_identity_view(state, tenant_id, identity_id)
+            for owner, identity_id in state.identity_metadata
+            if owner == tenant_id
+        ]
+        return {
+            "identities": sorted(identities, key=lambda item: str(item["display_name"]).lower())
+        }
+
+    @app.post("/v1/voice-identities", status_code=201)
+    async def create_voice_identity(
+        payload: dict[str, Any], request: Request, tenant_id: str = Depends(dev_tenant)
+    ) -> dict[str, Any]:
+        """Create local identity metadata; templates arrive through enrollment."""
+        state: AppState = request.app.state.sastt
+        external_id = payload.get("external_id")
+        identity_id = str(external_id) if external_id else new_id("vid")
+        if not identity_id.strip():
+            raise HTTPException(status_code=400, detail="external_id must not be empty")
+        key = (tenant_id, identity_id)
+        if key in state.identity_metadata:
+            raise HTTPException(status_code=409, detail="voice identity already exists")
+        state.identity_metadata[key] = {
+            "display_name": str(payload.get("display_name") or identity_id),
+            "consent_ref": str(payload["consent_ref"]) if payload.get("consent_ref") else None,
+        }
+        return _voice_identity_view(state, tenant_id, identity_id)
+
+    @app.get("/v1/voice-identities/{identity_id}")
+    async def get_voice_identity(
+        identity_id: str, request: Request, tenant_id: str = Depends(dev_tenant)
+    ) -> dict[str, Any]:
+        return _voice_identity_view(request.app.state.sastt, tenant_id, identity_id)
+
+    @app.post("/v1/voice-identities/{identity_id}/enrollments", status_code=201)
+    async def enroll_voice_identity(
+        identity_id: str,
+        payload: dict[str, Any],
+        request: Request,
+        tenant_id: str = Depends(dev_tenant),
+    ) -> dict[str, Any]:
+        """Extract a clean embedding from enrollment audio and return quality details."""
+        state: AppState = request.app.state.sastt
+        if state.registry is None:  # pragma: no cover - state always wires one
+            raise ModelNotReadyError("voice registry is not available")
+        metadata = state.identity_metadata.get((tenant_id, identity_id))
+        if metadata is None:
+            raise TenantAccessDeniedError("voice identity not found for this tenant")
+        consent_ref = payload.get("consent_ref") or metadata.get("consent_ref")
+        if not consent_ref:
+            raise HTTPException(status_code=400, detail="consent_ref is required for enrollment")
+        embedding = _extract_enrollment_embedding(state, payload, tenant_id)
+        report = state.registry.enroll(
+            tenant_id,
+            identity_id,
+            [embedding],
+            CallContext(
+                stage="voice_enrollment", tenant_hash=tenant_hash(tenant_id), metrics=state.metrics
+            ),
+            display_name=metadata.get("display_name"),
+            consent_ref=str(consent_ref),
+        )
+        metadata["consent_ref"] = str(consent_ref)
+        return report.to_dict()
+
+    @app.delete("/v1/voice-identities/{identity_id}", status_code=202)
+    async def delete_voice_identity(
+        identity_id: str, request: Request, tenant_id: str = Depends(dev_tenant)
+    ) -> dict[str, Any]:
+        state: AppState = request.app.state.sastt
+        if state.registry is None:  # pragma: no cover - state always wires one
+            raise ModelNotReadyError("voice registry is not available")
+        if (tenant_id, identity_id) not in state.identity_metadata:
+            raise TenantAccessDeniedError("voice identity not found for this tenant")
+        deleted = state.registry.delete_identity(
+            tenant_id,
+            identity_id,
+            CallContext(
+                stage="voice_delete", tenant_hash=tenant_hash(tenant_id), metrics=state.metrics
+            ),
+        )
+        del state.identity_metadata[(tenant_id, identity_id)]
+        return {"identity_id": identity_id, "deleted": deleted}
 
     # -- realtime sessions (spec 8.2) ---------------------------------------- #
 
@@ -437,6 +652,8 @@ def create_app(
             config=state.config,
             adapters=state.engine.adapters_for(scenario),
             tenant_id=tenant_id,
+            metrics=state.metrics,
+            calibrator=state.calibrator,
         )
         return {
             "session_id": session_id,
@@ -478,11 +695,125 @@ def create_app(
     return app
 
 
+def _build_local_registry(engine: Engine, config: SasttConfig) -> VoiceRegistry:
+    """Local registry works with either fake or real embeddings without a database."""
+    from sastt.adapters.fake import FakeVoiceRegistry
+
+    model_version = "fake-campplus@1"
+    if engine.name == "real":
+        model_version = engine.adapters_for(None).embedder.model_version
+    return FakeVoiceRegistry(
+        embedding_model_version=model_version,
+        accept_threshold=config.voice_id.accept_threshold,
+        ambiguous_margin=config.voice_id.ambiguous_margin,
+        minimum_clips=config.voice_id.minimum_enrollment_clips,
+        minimum_total_speech_ms=int(config.voice_id.minimum_total_speech_seconds * 1000),
+    )
+
+
+def _extract_enrollment_embedding(state: AppState, payload: dict[str, Any], tenant_id: str) -> Any:
+    """Decode enrollment audio once, VAD it, then extract a clean embedding."""
+    ctx = CallContext(
+        stage="voice_enrollment_extract", tenant_hash=tenant_hash(tenant_id), metrics=state.metrics
+    )
+    scenario_name = payload.get("scenario")
+    if scenario_name:
+        if state.engine.name != "fake":
+            raise HTTPException(
+                status_code=400, detail="scenario enrollment is only available on fake engine"
+            )
+        scenario = load_demo_scenario(str(scenario_name))
+        speaker = str(payload.get("speaker") or "")
+        if speaker not in scenario.speakers:
+            raise HTTPException(
+                status_code=400, detail="speaker must be one of the scenario speakers"
+            )
+        interval = TimeInterval(0, scenario.duration_ms)
+        samples = scenario.render_speaker(speaker, interval)
+        buffer = AudioBuffer(
+            samples=np.ascontiguousarray(samples[None, :]),
+            sample_rate=scenario.sample_rate,
+            start_sample=0,
+            channel_layout=("mono",),
+            source_clock_hz=scenario.sample_rate,
+        )
+        adapters = state.engine.adapters_for(scenario)
+        return adapters.embedder.embed(
+            buffer, ctx, speech_intervals=adapters.vad.detect(buffer, ctx)
+        )
+
+    encoded = payload.get("audio_base64")
+    if not encoded:
+        raise HTTPException(status_code=400, detail="provide scenario/speaker or audio_base64")
+    if state.engine.name == "fake":
+        raise ModelNotReadyError("real enrollment audio needs SASTT_ENGINE=real")
+    try:
+        audio = base64.b64decode(str(encoded), validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(status_code=400, detail="audio_base64 is not valid") from exc
+    adapters = state.engine.adapters_for(None)
+    asset = adapters.decoder.decode(audio, ctx)
+    speech = adapters.vad.detect(asset.mono_16k, ctx)
+    return adapters.embedder.embed(asset.mono_16k, ctx, speech_intervals=speech)
+
+
+def _voice_identity_view(state: AppState, tenant_id: str, identity_id: str) -> dict[str, Any]:
+    metadata = state.identity_metadata.get((tenant_id, identity_id))
+    if metadata is None:
+        raise TenantAccessDeniedError("voice identity not found for this tenant")
+    prototypes = []
+    if state.registry is not None and state.registry.identity_exists(tenant_id, identity_id):
+        prototypes_of = getattr(state.registry, "prototypes_of", None)
+        if prototypes_of is not None:
+            prototypes = prototypes_of(tenant_id, identity_id)
+    return {
+        "identity_id": identity_id,
+        "display_name": metadata["display_name"],
+        "status": "active",
+        "prototype_count": len(prototypes),
+        "embedding_model_version": state.registry.embedding_model_version
+        if state.registry
+        else None,
+        "consent_ref_present": bool(metadata["consent_ref"]),
+    }
+
+
+def render_transcript_from_public_segments(segments: list[dict[str, Any]]) -> str:
+    """Render durable JSON results without reconstructing domain objects."""
+    lines = []
+    for segment in sorted(
+        segments, key=lambda item: (item["start_ms"], item.get("session_speaker_id") or "")
+    ):
+        lines.append(
+            f"{segment['start_ms'] / 1000:0.3f}–{segment['end_ms'] / 1000:0.3f} — "
+            f"{segment['speaker_label']}: {segment['text']}"
+        )
+    return "\n".join(lines)
+
+
 def _session(state: AppState, session_id: str) -> StreamingSession:
     session = state.sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
     return session
+
+
+_LANGUAGE_CODE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z]{2,4})?$")
+
+
+def _requested_asr_language(value: object) -> str | None:
+    """Validate the optional per-job language hint; ``auto`` keeps detection on."""
+    if value is None or value == "auto":
+        return None
+    if not isinstance(value, str) or not _LANGUAGE_CODE.fullmatch(value):
+        raise HTTPException(
+            status_code=400, detail="language must be 'auto' or an ISO code such as en/vi"
+        )
+    return value
+
+
+def _config_with_asr_language(config: SasttConfig, language: str | None) -> SasttConfig:
+    return config.model_copy(update={"asr": config.asr.model_copy(update={"language": language})})
 
 
 def _job_view(state: AppState, job: JobRecord, created: bool) -> dict[str, Any]:
@@ -493,6 +824,7 @@ def _job_view(state: AppState, job: JobRecord, created: bool) -> dict[str, Any]:
         "created": created,
         "engine": state.engine.name,
         "scenario": state.job_scenarios.get(job.job_id),
+        "asr_language": state.job_languages.get(job.job_id) or "auto",
         "config_version": job.config_version,
         "warnings": result.warnings if result else [],
         "degraded_mode": bool(result and result.degraded),
@@ -506,11 +838,11 @@ def _run_job(
     scenario: Scenario | None,
     audio: bytes,
     tenant_id: str,
+    config: SasttConfig,
 ) -> None:
     """Run one job in-process (the worker topology of spec 11.1 arrives in M3)."""
-    pipeline = OfflinePipeline(
-        state.config, state.engine.adapters_for(scenario), tenant_id=tenant_id
-    )
+    adapters = replace(state.engine.adapters_for(scenario), registry=state.registry)
+    pipeline = OfflinePipeline(config, adapters, tenant_id=tenant_id, calibrator=state.calibrator)
     ctx = CallContext(
         stage="offline_job",
         job_id=job.job_id,

@@ -11,14 +11,14 @@ Full detail — gates, weight pin state, blockers, known debt — lives in
 | Milestone | Scope | State |
 |---|---|---|
 | **M0 — Foundation and contracts** | package, config validation, domain models, ports, JSON Schema v2, fake adapters, state machine, revision/idempotency primitives, CI | **done** |
-| **M1 — Offline 2-speaker path** | ffmpeg decode, pyannote / faster-whisper / MossFormer2 / CAM++ adapters, pinned manifests, smoke tests | **~95%** — DoD passes on real weights; see status doc §9 |
-| M2 — Linking and Voice ID | pgvector registry, enrollment quality, deletion/audit | not started |
-| M3 — Near-realtime | queues, backpressure, latency instrumentation | partial (WebSocket, revisions and replay run in-process) |
-| M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | not started |
-| M5 — Production hardening | benchmark corpus, calibrators, load/soak, SBOM, capacity | not started |
+| **M1 — Offline 2-speaker path** | ffmpeg decode, pyannote / faster-whisper / MossFormer2 / CAM++ adapters, pinned manifests, smoke tests | **done** — offline DoD passes; see status doc |
+| M2 — Linking and Voice ID | registry, enrollment quality, deletion/audit | **~85%** — local Voice Registry API runs; persistent deploy wiring remains |
+| M3 — Near-realtime | queues, backpressure, latency instrumentation | **~75%** — bounded realtime ring + spool, revisions/replay, Prometheus metrics; no measured SLO/autoscale yet |
+| M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~35%** — gated local SepFormer adapter; real checkpoint/counter/GSS/WeSep pending |
+| M5 — Production hardening | benchmark corpus, calibrators, load/soak, SBOM, capacity | **~30%** — local calibration/report/SBOM tooling; corpus and real evidence pending |
 
 M0 acceptance (spec 18): scenarios **S01**, **S04** and **S12** pass structurally on fake
-adapters; S02, S03, S11 and S13 are covered too. On real weights all **12** model smoke
+adapters; S02, S03, S11 and S13 are covered too. On real weights all **32** model smoke
 tests pass with no skips, including the M1 DoD: one real file end to end producing a
 non-overlap segment plus two concurrent overlap segments with distinct speakers.
 
@@ -28,8 +28,8 @@ non-overlap segment plus two concurrent overlap segments with distinct speakers.
   Spec 19.1 states the deterministic harness cannot evaluate model quality, and spec 18
   rule 6 forbids presenting an oracle as a model test — so `tests/model/` skips with a
   reason instead of falling back to fakes.
-* **No invented confidences.** Every component confidence is `null` with
-  `confidence_status="uncalibrated"` until a calibration release exists (spec 0.3).
+* **No invented confidences.** A versioned JSON calibration release can be configured; until one is approved and configured, every component confidence is `null` with `confidence_status="uncalibrated"` (spec 0.3).
+* **Language handling.** Offline uploads default to Whisper auto-detection. The console can pin `vi` or `en` per job; the selected hint is part of that job's config version, so an English upload is never implicitly forced through the Vietnamese decoder path.
 * **No calibrated thresholds.** `source_linking` and `voice_id` thresholds ship as `null`
   and the pipeline fails closed: sources become `Unknown`/temporary rather than guessed
   (spec 5.10, 18 rule 7). Tests that exercise linking supply thresholds explicitly.

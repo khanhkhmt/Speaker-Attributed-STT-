@@ -22,7 +22,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir . "psycopg[binary,pool]" redis \
+RUN pip install --no-cache-dir . "psycopg[binary,pool]" redis boto3 \
  && pip install --no-cache-dir faster-whisper
 
 COPY configs/ ./configs/

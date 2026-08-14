@@ -11,11 +11,14 @@ server replays from the event log rather than re-emitting finals (spec 8.2, 15).
 from __future__ import annotations
 
 import contextlib
+import logging
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from sastt.domain.errors import SasttError
+
+LOG = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sastt.api.http import AppState
@@ -35,6 +38,8 @@ def register_websocket_routes(app: FastAPI) -> None:
             await websocket.close()
             return
 
+        frames_received = 0
+        bytes_received = 0
         try:
             if len(session.log) == 0:
                 await _send(websocket, [session.start()])
@@ -45,6 +50,8 @@ def register_websocket_routes(app: FastAPI) -> None:
                     break
 
                 if (payload := message.get("bytes")) is not None:
+                    frames_received += 1
+                    bytes_received += len(payload)
                     await _send(websocket, session.push_pcm(payload))
                     continue
 
@@ -55,10 +62,31 @@ def register_websocket_routes(app: FastAPI) -> None:
                 if _is_finalize(text):
                     break
         except WebSocketDisconnect:  # pragma: no cover - client hung up
+            LOG.info(
+                "stream disconnected session=%s frames=%d audio_ms=%d",
+                session_id,
+                frames_received,
+                session.now_ms,
+            )
             return
         except SasttError as exc:
+            LOG.warning(
+                "stream failed session=%s frames=%d audio_ms=%d error=%s",
+                session_id,
+                frames_received,
+                session.now_ms,
+                exc.code.value if exc.code else "SASTT_ERROR",
+            )
             await websocket.send_json({"type": "session.failed", "payload": exc.to_dict()})
         finally:
+            LOG.info(
+                "stream closed session=%s frames=%d bytes=%d audio_ms=%d state=%s",
+                session_id,
+                frames_received,
+                bytes_received,
+                session.now_ms,
+                session.state_machine.value,
+            )
             with contextlib.suppress(RuntimeError):  # already closed
                 await websocket.close()
 

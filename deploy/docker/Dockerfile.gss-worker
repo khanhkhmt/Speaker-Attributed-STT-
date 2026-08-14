@@ -19,7 +19,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir . "psycopg[binary,pool]" redis
+RUN pip install --no-cache-dir . "psycopg[binary,pool]" redis boto3
 # NOTE: gss/cupy are intentionally not installed yet. Spec 11.1 reserves this
 # image for phase 2; adding the dependency before the adapter exists would ship
 # a GPU stack nothing calls.

@@ -76,7 +76,8 @@ voice_id:
 asr:
   realtime_model_path: /models/faster-whisper-large-v3-turbo
   final_model_path: /models/faster-whisper-large-v3
-  language: vi
+  # null = Whisper auto-detect; set e.g. vi or en only when the source is known.
+  language: null
   word_timestamps: true
   compute_type: int8_float16
   final_rescore: false

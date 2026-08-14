@@ -37,6 +37,8 @@ class JobStore(Protocol):
 
     def update_state(self, tenant_id: str, job_id: str, state: JobState) -> JobRecord: ...
 
+    def set_error(self, tenant_id: str, job_id: str, error_code: str) -> JobRecord: ...
+
 
 @runtime_checkable
 class EventStore(Protocol):

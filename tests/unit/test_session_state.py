@@ -225,6 +225,18 @@ class TestIdentityResolution:
         assert speaker.identity_status is IdentityStatus.ANONYMOUS
         assert speaker.registry_speaker_id is None
 
+    def test_provisional_with_separated_evidence_is_promoted_at_finalization(
+        self, calibrated_config: SasttConfig
+    ) -> None:
+        state = SessionSpeakerState(
+            session_id="ses", config=calibrated_config, embedding_model_version=MODEL
+        )
+        temporary = state.create_temporary_speaker()
+        state.buffer_provisional_embedding(temporary.session_speaker_id, make_embedding(3))
+        assert state.finalize_unresolved() == []
+        assert temporary.state is IdentityState.SESSION_ANONYMOUS
+        assert temporary.display_label == "Speaker 1"
+
     def test_unresolved_provisional_becomes_unknown_at_finalization(
         self, state: SessionSpeakerState
     ) -> None:

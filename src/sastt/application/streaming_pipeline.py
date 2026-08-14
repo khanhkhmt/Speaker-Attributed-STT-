@@ -14,12 +14,19 @@ receives a duplicated final event (spec 8.2, 15).
 from __future__ import annotations
 
 import struct
+import tempfile
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
-from sastt.application.fusion import FusionEngine, NullConfidenceCalibrator, WordGroup
+from sastt.application.fusion import (
+    ConfidenceCalibrator,
+    FusionEngine,
+    NullConfidenceCalibrator,
+    WordGroup,
+)
 from sastt.application.offline_pipeline import (
     OfflinePipeline,
     PipelineAdapters,
@@ -47,7 +54,17 @@ from sastt.domain.events import (
     SystemClock,
 )
 from sastt.domain.transcript import ModelVersions, TranscriptSegment, sort_segments
-from sastt.observability import CallContext
+from sastt.observability import (
+    METRIC_AUDIO_SECONDS,
+    METRIC_REVISION,
+    METRIC_SPEAKER_COUNT_ESTIMATE,
+    METRIC_STREAM_BUFFER_SECONDS,
+    CallContext,
+    MetricsSink,
+    NullMetrics,
+    observe_gpu_memory,
+    tenant_hash,
+)
 
 
 @dataclass
@@ -70,8 +87,9 @@ class StreamingSession:
     adapters: PipelineAdapters
     tenant_id: str = "tenant_local"
     clock: Clock = field(default_factory=SystemClock)
-    calibrator: NullConfidenceCalibrator = field(default_factory=NullConfidenceCalibrator)
+    calibrator: ConfidenceCalibrator = field(default_factory=NullConfidenceCalibrator)
     keep_session_audio: bool = True
+    metrics: MetricsSink = field(default_factory=NullMetrics)
 
     def __post_init__(self) -> None:
         self.state_machine: SessionState = SessionState.CREATED
@@ -82,7 +100,14 @@ class StreamingSession:
             embedding_model_version=self.adapters.embedder.model_version,
         )
         self.pipeline = OfflinePipeline(
-            self.config, self.adapters, tenant_id=self.tenant_id, calibrator=self.calibrator
+            self.config,
+            self.adapters,
+            tenant_id=self.tenant_id,
+            calibrator=self.calibrator,
+            # Stream windows are reprocessed/revised independently; only the
+            # final offline pass may use a provisional centroid as continuity
+            # evidence across overlap crops.
+            allow_provisional_continuity=False,
         )
         self.model_versions = ModelVersions(
             diarization=self.adapters.diarizer.model_version,
@@ -90,7 +115,16 @@ class StreamingSession:
             asr=self.adapters.recognizer.model_version,
             calibration=self.calibrator.calibration_version,
         )
+        # Only the rolling window lives in RAM.  The full PCM is spooled to a
+        # temporary file for the final offline pass, so a long call cannot grow
+        # the process heap without bound (spec 4.2, M3 DoD).
         self._samples = np.zeros(0, dtype=np.float32)
+        self._total_samples = 0
+        self._session_pcm = (
+            tempfile.SpooledTemporaryFile(max_size=4_000_000, mode="w+b")  # noqa: SIM115
+            if self.keep_session_audio
+            else None
+        )
         self._emitted: list[_Emitted] = []
         self._emitted_until_ms = 0
         self._last_process_ms = 0
@@ -120,7 +154,7 @@ class StreamingSession:
 
     @property
     def now_ms(self) -> int:
-        return samples_to_ms(self._samples.size, self.sample_rate)
+        return samples_to_ms(self._total_samples, self.sample_rate)
 
     # -- lifecycle ----------------------------------------------------------- #
 
@@ -151,7 +185,21 @@ class StreamingSession:
         if len(payload) % 2 != 0:
             raise SasttError("PCM payload is not 16-bit aligned")
         frame = np.frombuffer(payload, dtype="<i2").astype(np.float32) / 32768.0
+        if self._session_pcm is not None:
+            self._session_pcm.write(payload)
+        self._total_samples += frame.size
         self._samples = np.concatenate([self._samples, frame])
+        ring_samples = ms_to_samples(self.ring_ms, self.sample_rate)
+        if self._samples.size > ring_samples:
+            self._samples = self._samples[-ring_samples:]
+        self.metrics.increment(
+            METRIC_AUDIO_SECONDS, frame.size / self.sample_rate, mode="streaming"
+        )
+        self.metrics.gauge(
+            METRIC_STREAM_BUFFER_SECONDS,
+            self._samples.size / self.sample_rate,
+            session_mode="streaming",
+        )
         return self._maybe_process()
 
     def push_audio(self, buffer: AudioBuffer) -> list[ServerEvent]:
@@ -172,7 +220,10 @@ class StreamingSession:
             self.log.append(
                 event_type=EventType.SESSION_FINALIZED,
                 clock=self.clock,
-                payload={"segments": len(self.log.final_events())},
+                payload={
+                    "segments": len(self.log.final_events()),
+                    "audio_duration_ms": self.now_ms,
+                },
                 model_versions=self.model_versions.to_dict(),
                 config_version=self.config.config_version,
             )
@@ -212,9 +263,13 @@ class StreamingSession:
     def _window_buffer(self) -> AudioBuffer | None:
         if self._samples.size == 0:
             return None
-        window_start_ms = max(0, self.now_ms - max(self.window_ms, self.ring_ms))
-        start = ms_to_samples(window_start_ms, self.sample_rate)
-        chunk = self._samples[start:]
+        # Run diarization on its configured rolling window, not the whole
+        # 30-second transport ring.  The latter is retained only for recovery;
+        # repeatedly running a 30-second GPU inference every hop starves socket
+        # ingest and makes file streaming appear to stop early.
+        window_samples = ms_to_samples(self.window_ms, self.sample_rate)
+        chunk = self._samples[-window_samples:]
+        start = max(0, self._total_samples - chunk.size)
         if chunk.size == 0:
             return None
         return AudioBuffer(
@@ -231,7 +286,14 @@ class StreamingSession:
         buffer = self._window_buffer()
         if buffer is None:
             return []
-        ctx = CallContext(stage="streaming", session_id=self.session_id)
+        ctx = CallContext(
+            stage="streaming",
+            session_id=self.session_id,
+            tenant_hash=tenant_hash(self.tenant_id),
+            audio_duration_ms=buffer.duration_ms,
+            metrics=self.metrics,
+        )
+        started = time.monotonic()
 
         diarization = self.adapters.diarizer.diarize(
             buffer,
@@ -247,6 +309,11 @@ class StreamingSession:
             min_duration_ms=seconds_to_ms(self.config.overlap_detection.min_duration_seconds),
         )
         self.pipeline.build_global_speakers(self.speakers, diarization, overlaps, buffer, ctx)
+        self.metrics.gauge(
+            METRIC_SPEAKER_COUNT_ESTIMATE,
+            diarization.estimated_session_speakers,
+            mode="streaming",
+        )
 
         speech = self.adapters.vad.detect(buffer, ctx.child("vad"))
         closed = [
@@ -256,7 +323,9 @@ class StreamingSession:
             and (force_close or self.now_ms - interval.end_ms >= self.silence_ms)
         ]
         if not closed:
-            return self._drain_label_revisions()
+            events = self._drain_label_revisions()
+            self._observe_iteration(started, buffer.duration_ms)
+            return events
 
         groups: list[WordGroup] = []
         for interval in closed:
@@ -280,7 +349,19 @@ class StreamingSession:
             [self._emitted_until_ms, *[interval.end_ms for interval in closed]]
         )
         events.extend(self._drain_label_revisions())
+        self._observe_iteration(started, buffer.duration_ms)
         return events
+
+    def _observe_iteration(self, started: float, audio_duration_ms: int) -> None:
+        elapsed = max(0.0, time.monotonic() - started)
+        self.metrics.observe("sastt_stage_duration_seconds", elapsed, stage="streaming_iteration")
+        if audio_duration_ms > 0:
+            self.metrics.observe(
+                "sastt_stage_rtf",
+                elapsed / (audio_duration_ms / 1000.0),
+                stage="streaming_iteration",
+            )
+        observe_gpu_memory(self.metrics)
 
     def _emit_provisional(
         self,
@@ -321,6 +402,7 @@ class StreamingSession:
         """Publish label changes as revisions — never rewrite a delivered event."""
         events: list[ServerEvent] = []
         for change in self.speakers.drain_label_changes():
+            self.metrics.increment(METRIC_REVISION, mode="streaming")
             events.append(
                 self.log.append(
                     event_type=EventType.TRANSCRIPT_REVISION,
@@ -343,23 +425,74 @@ class StreamingSession:
         events: list[ServerEvent] = []
         if self._samples.size == 0:
             return events
-        payload = _to_wav(self._samples, self.sample_rate)
-        ctx = CallContext(stage="finalization", session_id=self.session_id)
-        result = self.pipeline.run(
-            payload,
-            ctx,
+        samples = self._all_session_samples()
+        payload = _to_wav(samples, self.sample_rate)
+        ctx = CallContext(
+            stage="finalization",
             session_id=self.session_id,
-            state=self.speakers,
+            tenant_hash=tenant_hash(self.tenant_id),
+            audio_duration_ms=samples_to_ms(samples.size, self.sample_rate),
+            metrics=self.metrics,
         )
+        # Re-run canonical attribution from a clean state over the complete
+        # spooled audio. Rolling state may contain provisional identities from
+        # partially seen windows; reusing it here can reserve a dummy/temporary
+        # slot and turn a valid second final speaker into ``Unknown``.
+        final_pipeline = OfflinePipeline(
+            self.config,
+            self.adapters,
+            tenant_id=self.tenant_id,
+            calibrator=self.calibrator,
+            allow_provisional_continuity=True,
+        )
+        result = final_pipeline.run(payload, ctx, session_id=self.session_id)
         # Reconciliation may have merged temporary identities: publish the label
         # changes as revisions before the finals (spec 5.9 step 5, FR-011).
         events.extend(self._drain_label_revisions())
 
         superseded_ids: set[str] = set()
+        prepared: list[tuple[TranscriptSegment, str | None]] = []
+        emitted_by_id = {item.event_id: item for item in self._emitted}
         for segment in result.segments:
             superseded = self._superseded_event_id(segment, superseded_ids)
             if superseded:
                 superseded_ids.add(superseded)
+                # The full-audio final pass has a fresh canonical state. Publish
+                # a revision for the rolling provisional identity it replaces so
+                # clients never retain a dangling "Temporary Speaker" label.
+                prior = emitted_by_id.get(superseded)
+                if prior is not None:
+                    speaker = self.speakers.get(prior.session_speaker_id)
+                    if speaker.state.value == "PROVISIONAL" and segment.speaker_label.startswith(
+                        "Speaker "
+                    ):
+                        target = next(
+                            (
+                                candidate
+                                for candidate in self.speakers.active
+                                if candidate.session_speaker_id != speaker.session_speaker_id
+                                and candidate.state.value != "PROVISIONAL"
+                                and candidate.display_label == segment.speaker_label
+                            ),
+                            None,
+                        )
+                        if target is not None and self.speakers.can_merge(
+                            speaker.session_speaker_id, target.session_speaker_id
+                        ):
+                            self.speakers.merge(
+                                speaker.session_speaker_id,
+                                target.session_speaker_id,
+                                "final_pass_reconciliation",
+                            )
+                        else:
+                            self.speakers.promote_provisional(
+                                prior.session_speaker_id,
+                                "final_pass_reconciliation",
+                                label=segment.speaker_label,
+                            )
+            prepared.append((segment, superseded))
+        events.extend(self._drain_label_revisions())
+        for segment, superseded in prepared:
             events.append(
                 self.log.append(
                     event_type=EventType.TRANSCRIPT_FINAL,
@@ -383,6 +516,14 @@ class StreamingSession:
                 )
             )
         return events
+
+    def _all_session_samples(self) -> FloatArray:
+        """Read the spooled session PCM without retaining it in the heap."""
+        if self._session_pcm is None:
+            return self._samples
+        self._session_pcm.seek(0)
+        raw = self._session_pcm.read()
+        return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
     def _superseded_event_id(
         self, segment: TranscriptSegment, already_used: set[str]

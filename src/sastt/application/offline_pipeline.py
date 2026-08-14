@@ -15,7 +15,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from sastt.application.fusion import FusionEngine, NullConfidenceCalibrator, WordGroup
+from sastt.application.fusion import (
+    ConfidenceCalibrator,
+    FusionEngine,
+    NullConfidenceCalibrator,
+    WordGroup,
+)
 from sastt.application.overlap_router import (
     CountingEvidence,
     Route,
@@ -108,12 +113,14 @@ class OfflinePipeline:
         adapters: PipelineAdapters,
         *,
         tenant_id: str = "tenant_local",
-        calibrator: NullConfidenceCalibrator | None = None,
+        calibrator: ConfidenceCalibrator | None = None,
+        allow_provisional_continuity: bool = True,
     ) -> None:
         self.config = config
         self.adapters = adapters
         self.tenant_id = tenant_id
         self.calibrator = calibrator or NullConfidenceCalibrator()
+        self.allow_provisional_continuity = allow_provisional_continuity
 
     # -- entry point --------------------------------------------------------- #
 
@@ -145,7 +152,7 @@ class OfflinePipeline:
                 f"{asset.duration_ms} ms exceeds the {max_ms} ms limit",
                 details={"duration_ms": asset.duration_ms},
             )
-        ctx.metrics.observe(METRIC_AUDIO_SECONDS, asset.duration_ms / 1000.0, mode="batch")
+        ctx.metrics.increment(METRIC_AUDIO_SECONDS, asset.duration_ms / 1000.0, mode="batch")
         mono = asset.mono_16k
 
         # --- DIARIZING (spec 5.2) ------------------------------------------- #
@@ -162,7 +169,7 @@ class OfflinePipeline:
             merge_gap_ms=seconds_to_ms(self.config.overlap_detection.merge_gap_seconds),
             min_duration_ms=seconds_to_ms(self.config.overlap_detection.min_duration_seconds),
         )
-        ctx.metrics.observe(
+        ctx.metrics.increment(
             METRIC_OVERLAP_SECONDS,
             sum(r.interval.duration_ms for r in overlap_regions) / 1000.0,
             route="offline",
@@ -384,7 +391,11 @@ class OfflinePipeline:
 
             result = link_sources(
                 embeddings,
-                state.prototypes(),
+                (
+                    state.linking_prototypes()
+                    if self.allow_provisional_continuity
+                    else state.prototypes()
+                ),
                 self.config.source_linking,
                 previous_mapping=previous_mapping,
                 ctx=ctx,
@@ -429,12 +440,21 @@ class OfflinePipeline:
                     else:
                         warnings.append("unidentified_source")
                 elif embeddings[index] is not None:
-                    state.update_prototype(
-                        speaker_id,
-                        embeddings[index],  # type: ignore[arg-type]
-                        link_margin=link.margin,
-                        source_quality_passed=batch.source_quality[index].passed_gate,
-                    )
+                    speaker = state.get(speaker_id)
+                    if speaker.state is IdentityState.PROVISIONAL:
+                        # A temporary prototype is continuity evidence only.  It
+                        # is promoted at finalization, never merged by guesswork.
+                        state.buffer_provisional_embedding(
+                            speaker_id,
+                            embeddings[index],  # type: ignore[arg-type]
+                        )
+                    else:
+                        state.update_prototype(
+                            speaker_id,
+                            embeddings[index],  # type: ignore[arg-type]
+                            link_margin=link.margin,
+                            source_quality_passed=batch.source_quality[index].passed_gate,
+                        )
 
                 # Sources of one crop are concurrent by construction, so they are
                 # different people and can never be merged later (spec 5.6, 5.8.7).

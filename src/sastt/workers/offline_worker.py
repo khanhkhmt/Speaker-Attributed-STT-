@@ -25,6 +25,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from sastt.adapters.fake.scenario import Scenario
+
 # Imported from the submodules, not the packages: the package __getattr__ that
 # keeps psycopg/redis optional hides the real types from the type checker.
 from sastt.adapters.persistence.postgres import PostgresJobStore, build_pool
@@ -35,10 +37,12 @@ from sastt.adapters.queue.redis_queue import (
     Task,
     build_client,
 )
+from sastt.adapters.storage import S3ObjectStore
 from sastt.config import load_config
 from sastt.domain.errors import SasttError
 from sastt.domain.events import JobState
 from sastt.observability import CallContext, InMemoryMetrics
+from sastt.ports.storage import ObjectStore
 
 LOG = logging.getLogger("sastt.worker")
 
@@ -68,6 +72,7 @@ class OfflineWorker:
         jobs: PostgresJobStore,
         queues: list[str],
         consumer: str,
+        objects: ObjectStore,
         engine_name: str = "fake",
         config_path: str | None = None,
     ) -> None:
@@ -75,11 +80,12 @@ class OfflineWorker:
         self.jobs = jobs
         self.queues = queues
         self.consumer = consumer
+        self.objects = objects
         self.engine_name = engine_name
         self.config_path = config_path
         self.metrics = InMemoryMetrics()
         self._running = True
-        self._adapters: Any = None
+        self._engine: Any = None
         self._config: Any = None
 
     def stop(self, *_: object) -> None:
@@ -87,24 +93,22 @@ class OfflineWorker:
         LOG.info("shutdown requested; finishing current task")
         self._running = False
 
-    def adapters(self) -> Any:
-        """Load models once, before the first task rather than per task."""
-        if self._adapters is None:
+    def adapters(self, scenario: Scenario | None = None) -> Any:
+        """Load a real model bundle once; fake adapters retain their scenario."""
+        if self._engine is None:
             from sastt.api.http import build_fake_engine, build_real_engine
 
             self._config = load_config(
                 self.config_path or DEFAULT_CONFIG,
                 environment="development",
                 manifest_dir=MANIFEST_DIR,
-                # Linking thresholds ship as null and the pipeline fails closed
-                # (spec 5.10). A real deployment gets these from a calibration
-                # release (spec 21.3); until then the worker needs a value to be
-                # able to link at all.
+                # Demo-only calibration-shaped override; production inference
+                # keeps null thresholds and fails closed until calibrated.
                 overrides={"source_linking": {"accept_threshold": 0.55, "ambiguous_margin": 0.10}},
             )
             builder = build_fake_engine if self.engine_name == "fake" else build_real_engine
-            self._adapters = builder(self._config).adapters_for(None)
-        return self._adapters
+            self._engine = builder(self._config)
+        return self._engine.adapters_for(scenario)
 
     def run_forever(self) -> int:
         # A previous incarnation of this consumer may have died holding tasks.
@@ -137,9 +141,16 @@ class OfflineWorker:
 
     def handle(self, task: Task) -> None:
         """Run one job to SUCCEEDED, or DEGRADED_SUCCEEDED when a stage degraded."""
+        from sastt.application.fusion import load_confidence_calibrator
         from sastt.application.offline_pipeline import OfflinePipeline
 
         audio = self._load_audio(task)
+        scenario_name = task.payload.get("scenario")
+        scenario = (
+            Scenario.load(REPO_ROOT / "tests" / "fixtures" / f"{scenario_name}.json")
+            if scenario_name
+            else None
+        )
         for state in PIPELINE_STATES:
             self.jobs.update_state(task.tenant_id, task.job_id, state)
 
@@ -149,13 +160,27 @@ class OfflineWorker:
             job_id=task.job_id,
             metrics=self.metrics,
         )
-        self.adapters()
-        result = OfflinePipeline(self._config, self._adapters).run(
-            audio, ctx, session_id=task.job_id
+        language = task.payload.get("language")
+        if language is not None and not isinstance(language, str):
+            raise SasttError("task language must be a string or null")
+        job_config = self._config.model_copy(
+            update={"asr": self._config.asr.model_copy(update={"language": language})}
         )
+        result = OfflinePipeline(
+            job_config,
+            self.adapters(scenario),
+            calibrator=load_confidence_calibrator(job_config.confidence.calibration_path),
+        ).run(audio, ctx, session_id=task.job_id)
 
         segments = [segment.to_public_dict() for segment in result.segments]
-        self.jobs.save_result(task.tenant_id, task.job_id, segments, task.job_id)
+        self.jobs.save_result(
+            task.tenant_id,
+            task.job_id,
+            segments,
+            task.job_id,
+            warnings=result.warnings,
+            degraded=result.degraded,
+        )
         self.jobs.update_state(
             task.tenant_id,
             task.job_id,
@@ -163,17 +188,16 @@ class OfflineWorker:
         )
 
     def _load_audio(self, task: Task) -> bytes:
-        """Audio comes from the object store, never inline in the task."""
-        raw = task.payload.get("audio_path")
-        path = Path(str(raw)) if raw else None
-        if path is None or not path.exists():
-            raise SasttError("task has no readable audio_path", details={"task_id": task.task_id})
-        return path.read_bytes()
+        """Audio comes from tenant-scoped object storage, never a local path."""
+        key = task.payload.get("audio_key")
+        if not isinstance(key, str) or not key:
+            raise SasttError("task has no audio_key", details={"task_id": task.task_id})
+        return self.objects.get(task.tenant_id, key)
 
     def _fail_job(self, task: Task, message: str) -> None:
         try:
-            job = self.jobs.get(task.tenant_id, task.job_id)
-            job.error_code = "SEPARATION_FAILED" if "separation" in message else "MODEL_NOT_READY"
+            error_code = "SEPARATION_FAILED" if "separation" in message else "MODEL_NOT_READY"
+            self.jobs.set_error(task.tenant_id, task.job_id, error_code)
             self.jobs.update_state(task.tenant_id, task.job_id, JobState.FAILED)
         except Exception:  # noqa: BLE001 - the job may already be gone
             LOG.exception("could not mark job %s failed", task.job_id)
@@ -196,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         jobs=PostgresJobStore(build_pool(args.database_url)),
         queues=list(args.queues),
         consumer=f"{socket.gethostname()}:{os.getpid()}",
+        objects=S3ObjectStore.from_environment(),
         engine_name=args.engine,
         config_path=args.config,
     )

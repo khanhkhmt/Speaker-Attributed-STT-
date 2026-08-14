@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +17,15 @@ from sastt.config import Environment
 from sastt.domain.errors import ConfigurationError
 
 pytestmark = pytest.mark.integration
+
+
+@dataclass
+class RecordingQueue:
+    tasks: list[dict[str, Any]]
+
+    def enqueue(self, queue: str, **kwargs: Any) -> object:
+        self.tasks.append({"queue": queue, **kwargs})
+        return object()
 
 
 @pytest.fixture(scope="module")
@@ -31,6 +43,13 @@ class TestProbes:
 
     def test_health(self, client: TestClient) -> None:
         assert client.get("/healthz").json() == {"status": "ok"}
+
+    def test_console_serves_all_product_workspaces(self, client: TestClient) -> None:
+        page = client.get("/")
+        assert page.status_code == 200
+        assert "Voxlane" in page.text
+        assert "Voice Registry" in page.text
+        assert "Near-realtime" in page.text
 
     def test_production_refuses_the_dev_auth_stub(self) -> None:
         """Spec 14.2: the tenant must come from auth claims, not a header."""
@@ -80,6 +99,63 @@ class TestOfflineJobs:
         assert response.status_code == 503
         assert response.json()["error_code"] == "MODEL_NOT_READY"
 
+    def test_queue_mode_persists_audio_by_sha256_and_enqueues_a_key(self) -> None:
+        queue = RecordingQueue(tasks=[])
+        app = create_app(task_queue=queue)  # type: ignore[arg-type]
+        queued_client = TestClient(app)
+
+        response = queued_client.post(
+            "/v1/jobs",
+            json={"scenario": "s02_two_speaker_overlap"},
+            headers={"Idempotency-Key": "queued-job"},
+        )
+
+        assert response.status_code == 201
+        job_id = response.json()["job_id"]
+        state = app.state.sastt
+        job = state.jobs.get("tenant_dev", job_id)
+        assert (
+            job.input_hash
+            == hashlib.sha256(state.objects.get("tenant_dev", f"jobs/{job_id}/input")).hexdigest()
+        )
+        assert queue.tasks == [
+            {
+                "queue": "speaker.batch",
+                "tenant_id": "tenant_dev",
+                "job_id": job_id,
+                "payload": {
+                    "audio_key": f"jobs/{job_id}/input",
+                    "scenario": "s02_two_speaker_overlap",
+                    "language": None,
+                },
+            }
+        ]
+        assert response.json()["state"] == "QUEUED"
+
+    def test_job_can_pin_asr_language_without_changing_global_config(
+        self, client: TestClient
+    ) -> None:
+        response = client.post(
+            "/v1/jobs",
+            json={"scenario": "s01_five_speakers_no_overlap", "language": "en"},
+            headers={"Idempotency-Key": "english-hint"},
+        )
+        assert response.status_code == 201
+        job = response.json()
+        assert job["asr_language"] == "en"
+        assert job["config_version"] != client.app.state.sastt.config.config_version
+
+    def test_job_rejects_an_invalid_asr_language_hint(self, client: TestClient) -> None:
+        response = client.post(
+            "/v1/jobs",
+            json={"scenario": "s01_five_speakers_no_overlap", "language": "english please"},
+            headers={"Idempotency-Key": "bad-language"},
+        )
+        assert response.status_code == 400
+
+    def test_metrics_are_exposed_for_prometheus(self, client: TestClient) -> None:
+        assert client.get("/metrics").headers["content-type"].startswith("text/plain")
+
     def test_unknown_tenant_cannot_read_a_job(self, client: TestClient) -> None:
         created = client.post(
             "/v1/jobs",
@@ -89,6 +165,69 @@ class TestOfflineJobs:
         denied = client.get(f"/v1/jobs/{created['job_id']}", headers={"X-Tenant-Id": "tenant_b"})
         assert denied.status_code == 400
         assert denied.json()["error_code"] == "TENANT_ACCESS_DENIED"
+
+
+class TestVoiceRegistry:
+    def test_create_enroll_read_and_delete_identity(self, client: TestClient) -> None:
+        headers = {"X-Tenant-Id": "tenant_registry"}
+        created = client.post(
+            "/v1/voice-identities",
+            json={"external_id": "EMP-042", "display_name": "Nguyễn Văn B"},
+            headers=headers,
+        )
+        assert created.status_code == 201
+        assert created.json()["prototype_count"] == 0
+
+        missing_consent = client.post(
+            "/v1/voice-identities/EMP-042/enrollments",
+            json={"scenario": "s02_two_speaker_overlap", "speaker": "spk_a"},
+            headers=headers,
+        )
+        assert missing_consent.status_code == 400
+
+        report = None
+        for _ in range(3):
+            enrolled = client.post(
+                "/v1/voice-identities/EMP-042/enrollments",
+                json={
+                    "scenario": "s02_two_speaker_overlap",
+                    "speaker": "spk_a",
+                    "consent_ref": "consent-001",
+                },
+                headers=headers,
+            )
+            assert enrolled.status_code == 201
+            report = enrolled.json()
+        assert report is not None
+        assert report["prototype_count"] == 3
+        assert report["total_speech_ms"] >= 15_000
+        assert report["meets_policy"] is True
+
+        identity = client.get("/v1/voice-identities/EMP-042", headers=headers)
+        assert identity.status_code == 200
+        assert identity.json()["prototype_count"] == 3
+        assert identity.json()["consent_ref_present"] is True
+
+        removed = client.delete("/v1/voice-identities/EMP-042", headers=headers)
+        assert removed.status_code == 202
+        assert removed.json()["deleted"] is True
+        assert client.get("/v1/voice-identities/EMP-042", headers=headers).status_code == 400
+
+    def test_voice_identity_list_is_tenant_scoped(self, client: TestClient) -> None:
+        headers = {"X-Tenant-Id": "tenant_registry_list"}
+        client.post("/v1/voice-identities", json={"external_id": "EMP-list"}, headers=headers)
+
+        listed = client.get("/v1/voice-identities", headers=headers)
+
+        assert listed.status_code == 200
+        assert [item["identity_id"] for item in listed.json()["identities"]] == ["EMP-list"]
+
+    def test_voice_identity_is_tenant_scoped(self, client: TestClient) -> None:
+        owner = {"X-Tenant-Id": "tenant_owner"}
+        intruder = {"X-Tenant-Id": "tenant_intruder"}
+        client.post("/v1/voice-identities", json={"external_id": "EMP-private"}, headers=owner)
+
+        assert client.get("/v1/voice-identities/EMP-private", headers=intruder).status_code == 400
 
 
 class TestRealtimeSession:
