@@ -13,6 +13,7 @@ receives a duplicated final event (spec 8.2, 15).
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -342,7 +343,7 @@ class StreamingSession:
         events: list[ServerEvent] = []
         if self._samples.size == 0:
             return events
-        payload = _to_pcm16(self._samples)
+        payload = _to_wav(self._samples, self.sample_rate)
         ctx = CallContext(stage="finalization", session_id=self.session_id)
         result = self.pipeline.run(
             payload,
@@ -418,6 +419,21 @@ def _final_dedup_key(segment: TranscriptSegment) -> str:
 def _to_pcm16(samples: FloatArray) -> bytes:
     clipped = np.clip(samples, -1.0, 1.0)
     return (clipped * 32767.0).astype("<i2").tobytes()
+
+
+def _to_wav(samples: FloatArray, sample_rate: int) -> bytes:
+    """Wrap mono float samples in a RIFF/WAVE container.
+
+    The final pass re-enters the offline pipeline, whose entry point takes
+    *encoded* audio and probes it with ffprobe. Headerless PCM is rejected there
+    ("ffprobe could not read the input"), so the session's buffer has to carry a
+    header — unlike the WebSocket ingest path, which receives raw PCM frames by
+    contract (spec 1.1).
+    """
+    pcm = _to_pcm16(samples)
+    header = b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVEfmt "
+    header += struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16)
+    return header + b"data" + struct.pack("<I", len(pcm)) + pcm
 
 
 def _segment_from_payload(payload: dict[str, Any]) -> TranscriptSegment:
