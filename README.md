@@ -8,19 +8,24 @@ The specification is the requirement source; every module names the sections it 
 Full detail — gates, weight pin state, blockers, known debt — lives in
 [`docs/implementation-status.md`](docs/implementation-status.md).
 
+Hướng dẫn cài đặt, stage model, chạy API/worker, xử lý queue và sự cố nằm tại
+[`docs/running-guide.md`](docs/running-guide.md).
+
 | Milestone | Scope | State |
 |---|---|---|
 | **M0 — Foundation and contracts** | package, config validation, domain models, ports, JSON Schema v2, fake adapters, state machine, revision/idempotency primitives, CI | **done** |
-| **M1 — Offline 2-speaker path** | ffmpeg decode, pyannote / faster-whisper / MossFormer2 / CAM++ adapters, pinned manifests, smoke tests | **done** — offline DoD passes; see status doc |
+| **M1 — Offline 2-speaker path** | ffmpeg decode, pyannote / faster-whisper / MossFormer2 / CAM++ adapters, pinned manifests, smoke tests | **done (functional)** — real offline path and plausibility guard verified; production evidence remains pending |
 | M2 — Linking and Voice ID | registry, enrollment quality, deletion/audit | **~85%** — local Voice Registry API runs; persistent deploy wiring remains |
-| M3 — Near-realtime | queues, backpressure, latency instrumentation | **~75%** — bounded realtime ring + spool, revisions/replay, Prometheus metrics; no measured SLO/autoscale yet |
+| M3 — Near-realtime | queues, backpressure, latency instrumentation | **~60%** — bounded realtime ring + spool, revisions/replay, Prometheus metrics; no measured SLO/autoscale yet |
 | M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~35%** — gated local SepFormer adapter; real checkpoint/counter/GSS/WeSep pending |
 | M5 — Production hardening | benchmark corpus, calibrators, load/soak, SBOM, capacity | **~30%** — local calibration/report/SBOM tooling; corpus and real evidence pending |
 
 M0 acceptance (spec 18): scenarios **S01**, **S04** and **S12** pass structurally on fake
-adapters; S02, S03, S11 and S13 are covered too. On real weights all **32** model smoke
-tests pass with no skips, including the M1 DoD: one real file end to end producing a
-non-overlap segment plus two concurrent overlap segments with distinct speakers.
+adapters; S02, S03, S11 and S13 are covered too. The latest non-model quality run
+completed with **230 passed, 57 deselected**. A real-engine rerun on a 20-minute
+upload also verified the transcript plausibility guard: text whose VAD duration or
+word-timestamp span is physically impossible is withheld and the job is marked
+degraded with an explicit warning. This is a safety guard, not an accuracy claim.
 
 ## What is deliberately absent
 
@@ -65,15 +70,14 @@ uvicorn --factory sastt.api.http:create_app --app-dir src --port 8000
 # mở http://localhost:8000
 ```
 
-The console runs the built-in scenarios through the real pipeline and shows the
-speaker timeline, the transcript with its metadata, and — in realtime mode — the
-spec 8.2 event stream with provisional → revision → final and reconnect replay.
+The console shows the active engine, speaker timeline, transcript metadata and — in
+realtime mode — the spec 8.2 event stream with provisional → revision → final and
+reconnect replay. `web/` and `/v1/demo/*` are development aids, not product APIs.
 
-`web/` and the `/v1/demo/*` routes are a development aid, not part of the product
-spec. The console states the active engine on every page: with the Milestone 0
-`fake` engine the output demonstrates pipeline **structure** only and is never a
-model result (spec 18 rule 6, 19.1). Uploading real audio returns
-`MODEL_NOT_READY` until the Milestone 1 adapters land, rather than pretending.
+The default `fake` engine demonstrates pipeline **structure** only and rejects real
+audio with `MODEL_NOT_READY`. To transcribe a real upload, start API and worker with
+`SASTT_ENGINE=real`, verify `/readyz`, then follow the queue workflow in the
+[runbook](docs/running-guide.md#8-chạy-topology-queue-ở-local-api--worker--hạ-tầng).
 
 ## Development
 
@@ -109,3 +113,6 @@ checkpoint, or an uncalibrated Voice ID that is not failing closed (spec 12, 20)
    (spec 5.8, 16.3).
 5. `session_speaker_id` is stable and never reused; display labels may be revised, and a
    delivered event is superseded, never rewritten (spec 5.7, 6, FR-011).
+6. ASR text must be plausible for both VAD-confirmed speech and word timestamps.
+   Invalid output is not attributed or emitted; the job is explicitly degraded with
+   an `unreliable_*_transcript` warning, while the original audio remains available.

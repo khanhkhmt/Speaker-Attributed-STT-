@@ -148,6 +148,9 @@ pytest -m model -q
 Model smoke pass không phải benchmark accuracy; benchmark corpus, calibration và
 load evidence là các gate riêng.
 
+Lần kiểm tra mã gần nhất (14/08/2026): `ruff check`, format, `mypy` và `pytest -q`
+đều pass (**230 passed, 57 deselected**).
+
 ## 5. Chạy nhanh giao diện development (fake engine)
 
 Đây là đường nhanh nhất để kiểm tra API, UI, scenario, JSON contract và realtime

@@ -15,7 +15,7 @@ thật, không ước lượng.
 | Milestone | Phạm vi | Trạng thái |
 |---|---|---|
 | M0 — Foundation & contracts | package `sastt`, config validation, domain models, ports, JSON Schema v2, fake adapters, state machine, revision/idempotency, CI | **xong** |
-| M1 — Offline 2-speaker path | decode/resample, adapter pyannote + faster-whisper + MossFormer2 + CAM++, pin manifest, smoke test | **~95%** — DoD pass; còn nợ mục 10 |
+| M1 — Offline 2-speaker path | decode/resample, adapter pyannote + faster-whisper + MossFormer2 + CAM++, pin manifest, smoke test | **xong về luồng chức năng** — DoD, worker queue và chốt transcript thực đã kiểm chứng; benchmark/soak/accuracy evidence vẫn là nợ production |
 | M2 — Linking & Voice ID | pgvector registry, enrollment quality, deletion/audit | **~85%** — API local tạo/enroll/xem/xóa đã chạy; persistent pgvector cần được chọn khi deploy |
 | M3 — Near-realtime | queue/worker, backpressure, latency instrumentation | **~60%** — có WebSocket/revision/replay, bounded RAM ring + disk spool final pass, backpressure phía client và Prometheus stage/RTF/GPU-optional metrics. Tuy nhiên chưa chứng minh được stream hết audio và gán speaker ổn định trên audio thật; không đạt beta/production. Chưa có OTel, autoscale hay SLO đo trên baseline. |
 | M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~35%** — router + feature gate + adapter SepFormer 3mix 8 kHz đã có; chưa pre-stage/benchmark checkpoint, chưa có counter production/GSS/WeSep |
@@ -27,8 +27,8 @@ thật, không ước lượng.
 |---|---|---|
 | Lint | `ruff check src tests deploy` | pass |
 | Format | `ruff format --check src tests deploy` | pass |
-| Type | `mypy` (strict) | pass, 61 source file |
-| Test thường | `pytest` | **223 passed**, 57 deselected (lần kiểm tra 14/08/2026; không gộp model/load/db) |
+| Type | `mypy` (strict) | pass, 55 source file |
+| Test thường | `pytest` | **230 passed**, 57 deselected (lần kiểm tra 14/08/2026; không gộp model/load/db) |
 | Test model | `pytest -m model` | **32 passed, 0 skipped** |
 | Test hạ tầng | `pytest -m db` | **21 passed** (Postgres + Redis thật) |
 | Coverage | `--cov=sastt.domain --cov=sastt.application` | 88% (spec 16.3 yêu cầu ≥85%) |
@@ -71,6 +71,23 @@ Gỡ blocker này làm lộ 3 lỗi thật mà đường fake không thể phát
 | OSD gộp chunk | timestamp phồng lên ~20× (overlap 2.5–5 s bị báo 146–292 s) | pyannote chỉ overlap-add *sau* convert; với `skip_conversion` phải tự `Inference.aggregate` theo `model.receptive_field`, nếu không output per-chunk bị đọc phẳng thành timeline 1 s/frame |
 | Merge nhầm 2 người | hai nguồn của cùng vùng overlap bị gán chung một `session_speaker_id` | source bị reject tạo temporary ID nhưng không có cannot-link với source kia cùng crop, nên reconciliation gộp lại (spec 5.6, 5.8.7) |
 
+### Cập nhật 14/08/2026 — chặn transcript không khả dĩ
+
+Một file upload 20 phút chạy bằng `SASTT_ENGINE=real` đã phát hiện ASR có thể sinh
+một câu dài trong cửa sổ vài trăm mili-giây ở vùng overlap. Đây là lỗi logic kiểm
+tra đầu ra, không phải transcript mẫu được pipeline nạp vào runtime. Pipeline nay
+đặt physical-plausibility gate cho cả nguồn đã tách, mixture fallback và non-overlap:
+
+- có ít nhất 100 ms speech do VAD xác nhận khi xuất text;
+- từ token thứ tư, tổng speech VAD **và** khoảng thời gian timestamp của các từ đều
+  phải đạt ít nhất 60 ms/từ;
+- không đạt thì không gán speaker/không xuất câu, giữ audio nguồn, thêm warning
+  `unreliable_separated_transcript`, `unreliable_mixture_transcript` hoặc
+  `unreliable_non_overlap_transcript`, và trả `DEGRADED_SUCCEEDED`.
+
+Lượt chạy kiểm chứng `job_01M0009…` không còn bản câu lỗi ở cả hai mốc đã quan
+sát. Đây là guard cấu trúc, không phải cam kết WER hay thay thế benchmark.
+
 Ngoài ra `torch.device("cuda")` được đổi thành `cuda:0` trong adapter pyannote và
 CAM++: `clearvoice` gọi `torch.cuda.set_device()` toàn cục khi chọn GPU trống
 nhất, làm adapter khác bám theo và chia tensor lên 2 GPU (`weight is on cuda:1,
@@ -100,8 +117,8 @@ clean A 0–2.5 s · overlap 2.5–5 s · clean B 5–7.5 s.
  start    end  ovl  src  status       label                 text
     60   2200  no   —    anonymous    Speaker 1             Các bạn hãy đăng ký kênh…
   2393   5713  yes  0    provisional  Temporary Speaker 1   Well, yeah, I mean, it totally is…
-  2393   5073  yes  1    provisional  Temporary Speaker 2   Hãy subscribe cho kênh La La School…
-  5819   7319  no   —    anonymous    Speaker 1             Hãy subscribe cho kênh La La School…
+  2393   5073  yes  1    provisional  Temporary Speaker 2   [nội dung overlap đã ẩn]
+  5819   7319  no   —    anonymous    Speaker 1             [nội dung overlap đã ẩn]
 ```
 
 Hai segment overlap giữ nguyên timestamp chồng nhau và mang **hai**
