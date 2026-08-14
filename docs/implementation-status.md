@@ -4,7 +4,7 @@
 |---|---|
 | Cập nhật | 14/08/2026 |
 | Spec tham chiếu | [`production-technical-spec.md`](production-technical-spec.md) v1.0 |
-| Milestone hiện tại | M0 xong · **M1 gần xong** — DoD pass, còn nợ ASR final và pin GPU |
+| Milestone hiện tại | M0 xong · M1 ~95% · **M2 ~70%** · **M3 ~60%** — hạ tầng fullstack đã chạy |
 | Engine mặc định | `fake` (M0). Đặt `SASTT_ENGINE=real` để dùng adapter model thật |
 
 Tài liệu này ghi **tình trạng thực tế** của repo. Mọi con số đều lấy từ lần chạy
@@ -15,9 +15,9 @@ thật, không ước lượng.
 | Milestone | Phạm vi | Trạng thái |
 |---|---|---|
 | M0 — Foundation & contracts | package `sastt`, config validation, domain models, ports, JSON Schema v2, fake adapters, state machine, revision/idempotency, CI | **xong** |
-| M1 — Offline 2-speaker path | decode/resample, adapter pyannote + faster-whisper + MossFormer2 + CAM++, pin manifest, smoke test | **~95%** — DoD pass; còn nợ mục 9 |
-| M2 — Linking & Voice ID | pgvector registry, enrollment quality, deletion/audit | chưa bắt đầu |
-| M3 — Near-realtime | queue/worker, backpressure, latency instrumentation | một phần (WebSocket + revision/replay đã chạy in-process) |
+| M1 — Offline 2-speaker path | decode/resample, adapter pyannote + faster-whisper + MossFormer2 + CAM++, pin manifest, smoke test | **~95%** — DoD pass; còn nợ mục 10 |
+| M2 — Linking & Voice ID | pgvector registry, enrollment quality, deletion/audit | **~70%** — registry + schema + audit chạy thật; chưa nối vào API |
+| M3 — Near-realtime | queue/worker, backpressure, latency instrumentation | **~60%** — WebSocket/revision/replay chạy trên model thật; Redis queue + worker chạy thật; chưa có autoscale/metric export |
 | M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | chưa bắt đầu |
 | M5 — Production hardening | benchmark corpus, calibrator, load/soak, SBOM, capacity | chưa bắt đầu |
 
@@ -27,9 +27,10 @@ thật, không ước lượng.
 |---|---|---|
 | Lint | `ruff check src tests deploy` | pass |
 | Format | `ruff format --check src tests deploy` | pass |
-| Type | `mypy` (strict) | pass, 46 file |
-| Test thường | `pytest` | **206 passed**, 16 deselected |
-| Test model | `pytest -m model` | **12 passed, 0 skipped** |
+| Type | `mypy` (strict) | pass, 53 file |
+| Test thường | `pytest` | **206 passed**, 57 deselected |
+| Test model | `pytest -m model` | **32 passed, 0 skipped** |
+| Test hạ tầng | `pytest -m db` | **21 passed** (Postgres + Redis thật) |
 | Coverage | `--cov=sastt.domain --cov=sastt.application` | 88% (spec 16.3 yêu cầu ≥85%) |
 
 Test model chạy trên weights thật + audio thật (VoxConverse dev, public,
@@ -132,7 +133,68 @@ thực tế: 2 người → nhận 2, 3 người → nhận 3, nhưng **4 ngư�
 → nhận 3** (đếm thiếu). Con số này được ghi lại làm mốc, không được dùng làm gate
 và không sửa code để làm nó đẹp lên (spec 18 rule 5).
 
-## 6. Scenario acceptance (spec 16.2)
+### Near-realtime trên model thật (spec 4.2, FR-011)
+
+Stream PCM 40 ms qua `StreamingSession`, weights thật:
+
+```text
+events: transcript.provisional 7 · transcript.final 4 · pipeline.warning 1 · session.finalized 1
+final segments 4 · overlap 2 · distinct overlap speakers 2
+replay(from 0) → 14 events (S12)
+xRT 0.86 · max push latency 4529 ms
+```
+
+Đường này **trước đó hỏng hoàn toàn** trên model thật: final pass đưa PCM không
+header vào decoder ffmpeg (`ffprobe could not read the input`). Fake decoder
+chấp nhận nên fake test không phát hiện. Đã sửa bằng cách bọc RIFF/WAVE.
+
+### ASR final `large-v3` (spec 0.2)
+
+Chạy lần đầu tiên — trước đó pin 2.9 GiB nhưng chưa thực thi dòng nào:
+
+| | turbo (realtime) | large-v3 (final) |
+|---|---|---|
+| decode 5 s audio | 0.75 s (RTF 0.150) | 0.87 s (RTF 0.175) |
+| text | giống nhau | giống nhau |
+| word timestamp cuối | 4320 ms | 3900 ms |
+
+Chậm hơn ~17% mà text không khác trên mẫu này; timestamp lệch 420 ms. Chưa trả
+lời được spec 21.6 (turbo hay large-v3 cho tiếng Việt) — cần benchmark.
+
+## 6. Fullstack — hạ tầng đã chạy thật (spec 10, 11.1, 11.3)
+
+| Thành phần | Trạng thái |
+|---|---|
+| PostgreSQL 14 + pgvector 0.8.0 | chạy; 11 bảng theo spec 10.2 |
+| Redis 6 | chạy; 8 queue theo spec 11.3 |
+| Migration | `deploy/migrate.py`, checksum, idempotent |
+| Job/Event store | `PostgresJobStore`, `PostgresEventStore` |
+| Voice registry | `PgVectorVoiceRegistry` — HNSW cosine, tenant-scoped, audit |
+| Queue | `RedisTaskQueue` — at-least-once, backpressure, requeue task của worker chết |
+| Worker | `sastt.workers.offline_worker` — process riêng, SIGTERM graceful |
+| Container | 5 Dockerfile spec 11.1 + `docker-compose.yml` (9 service) |
+
+Test hạ tầng chạy trên Postgres/Redis thật: **21 passed** (`pytest -m db`).
+
+Đường đi end-to-end đã chứng minh, engine `real`:
+
+```text
+1. API tạo job trong PostgreSQL            job_01KZZBKMFV... QUEUED
+2. API đẩy vào Redis queue                 speaker.batch depth=1
+3. Worker process nhận và xử lý            24.3 s, depth về 0
+4. Đọc kết quả lại từ PostgreSQL           SUCCEEDED, 4 segment
+      60-2200   overlap=False  Speaker 1
+    2393-5713   overlap=True   Temporary Speaker 1
+    2393-5073   overlap=True   Temporary Speaker 2
+    5819-7319   overlap=False  Speaker 1
+```
+
+**Chưa xong:** Docker chưa build được ở máy này (không có daemon) nên Dockerfile
+và compose mới chỉ được kiểm tra cú pháp; API vẫn chạy job in-process thay vì
+đẩy vào queue; chưa có auth/TLS; chưa export metric ra Prometheus; MinIO/object
+storage mới khai báo trong compose, chưa có adapter.
+
+## 7. Scenario acceptance (spec 16.2)
 
 Chạy trên fake adapters, không tải weights:
 
@@ -147,7 +209,7 @@ Chạy trên fake adapters, không tải weights:
 | S13 | retry idempotent | pass |
 | S05–S10, S14, S15 | Voice ID, đa kênh, model revision, cross-tenant | chờ M2/M4 |
 
-## 7. Lệch spec — đã rào, không giấu
+## 8. Lệch spec — đã rào, không giấu
 
 | Chỗ lệch | Lý do | Rào chắn |
 |---|---|---|
@@ -158,7 +220,7 @@ Chạy trên fake adapters, không tải weights:
 | `ports/audio.py`, `ports/fusion.py` ngoài cây spec 17 | spec 9 bắt buộc 3 port này | ghi chú trong `ports/__init__.py` |
 | Một môi trường Python cho mọi model | tiện phát triển | spec 11.1 yêu cầu tách image; cài `clearvoice` đã hạ numpy 2.5→1.26 |
 
-## 8. Nợ kỹ thuật đã biết
+## 9. Nợ kỹ thuật đã biết
 
 - **Chưa tách image theo worker** (spec 11.1). Xung đột numpy khi cài chung
   pyannote + clearvoice là bằng chứng cho việc phải tách ở production.
@@ -183,16 +245,18 @@ Chạy trên fake adapters, không tải weights:
   `clearvoice` kéo tensor sang GPU khác. Đúng cho một worker một GPU (spec 11.1),
   nhưng khi tách worker thì device phải lấy từ config chứ không hard-code.
 
-## 9. Còn nợ để đóng M1
+## 10. Còn nợ để đóng M1
 
 | Việc | Vì sao chưa xong |
 |---|---|
-| **`faster-whisper large-v3` chưa chạy dòng nào** | đã tải và pin 2.9 GiB, nhưng `asr.final_rescore: false` và không adapter nào load `final_model_path`. Spec 0.2 liệt kê nó là baseline "ASR final/offline" nên phải được kiểm chứng chạy được, dù mặc định tắt |
-| **`clearvoice` chưa pin GPU** | pyannote và CAM++ đã pin `cuda:0`, nhưng `clearvoice.SpeechModel` tự gọi `torch.cuda.set_device()` chọn "GPU trống nhất". Trên máy 2 GPU, MossFormer2 nhảy sang GPU 1 và giữ ~10.6 GB idle ở đó; khi VRAM eo hẹp gây `out of memory` và `invalid device ordinal` |
-| **Near-realtime chưa chạy trên model thật** | WebSocket + revision/replay mới chỉ chạy qua fake adapter. Spec 4.2/FR-011 chưa được kiểm chứng bằng weights thật |
+| **API vẫn chạy job in-process** | queue + worker đã chạy thật, nhưng `api/http.py` chưa đẩy job vào Redis. Đây là việc nối dây còn lại của spec 11.1 |
+| **Docker chưa build thử** | máy phát triển không có Docker daemon; 5 Dockerfile + compose mới chỉ kiểm tra cú pháp |
+| **Chưa có auth/TLS** | tenant vẫn lấy từ header `X-Tenant-Id`; `create_app(environment=production)` từ chối khởi động (spec 14.1–14.2) |
+| **Chưa export metric** | chỉ `InMemoryMetrics`; spec 13.1 cần Prometheus/OTel để autoscale theo queue age |
+| **Chưa có object storage adapter** | MinIO đã khai báo trong compose nhưng chưa có adapter `ObjectStore` dùng S3 |
 | **Chưa có load test** | RTF 0.297 là *một* lần chạy; spec 3 yêu cầu xác nhận bằng load test (spec 16.1.6), gồm p95, soak 30–60 phút và giới hạn VRAM/GPU 80% |
 
-## 10. Chạy thử
+## 11. Chạy thử
 
 Cần: Python 3.10+, ffmpeg, NVIDIA GPU + CUDA 12. Đo trên 2× Tesla T4.
 
