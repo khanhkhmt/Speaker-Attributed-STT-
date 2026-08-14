@@ -2,9 +2,9 @@
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Cập nhật | 13/08/2026 |
+| Cập nhật | 14/08/2026 |
 | Spec tham chiếu | [`production-technical-spec.md`](production-technical-spec.md) v1.0 |
-| Milestone hiện tại | M0 xong · M1 phần lớn xong, chặn ở 2 checkpoint gated |
+| Milestone hiện tại | M0 xong · **M1 gần xong** — DoD pass, còn nợ ASR final và pin GPU |
 | Engine mặc định | `fake` (M0). Đặt `SASTT_ENGINE=real` để dùng adapter model thật |
 
 Tài liệu này ghi **tình trạng thực tế** của repo. Mọi con số đều lấy từ lần chạy
@@ -15,7 +15,7 @@ thật, không ước lượng.
 | Milestone | Phạm vi | Trạng thái |
 |---|---|---|
 | M0 — Foundation & contracts | package `sastt`, config validation, domain models, ports, JSON Schema v2, fake adapters, state machine, revision/idempotency, CI | **xong** |
-| M1 — Offline 2-speaker path | decode/resample, adapter pyannote + faster-whisper + MossFormer2 + CAM++, pin manifest, smoke test | **~85%** — chặn ở pyannote gated |
+| M1 — Offline 2-speaker path | decode/resample, adapter pyannote + faster-whisper + MossFormer2 + CAM++, pin manifest, smoke test | **~95%** — DoD pass; còn nợ mục 9 |
 | M2 — Linking & Voice ID | pgvector registry, enrollment quality, deletion/audit | chưa bắt đầu |
 | M3 — Near-realtime | queue/worker, backpressure, latency instrumentation | một phần (WebSocket + revision/replay đã chạy in-process) |
 | M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | chưa bắt đầu |
@@ -29,12 +29,12 @@ thật, không ước lượng.
 | Format | `ruff format --check src tests deploy` | pass |
 | Type | `mypy` (strict) | pass, 46 file |
 | Test thường | `pytest` | **206 passed**, 16 deselected |
-| Test model | `pytest -m model` | **9 passed, 3 skipped** (skip có lý do) |
+| Test model | `pytest -m model` | **12 passed, 0 skipped** |
 | Coverage | `--cov=sastt.domain --cov=sastt.application` | 88% (spec 16.3 yêu cầu ≥85%) |
 
 Test model chạy trên weights thật + audio thật (VoxConverse dev, public,
-multi-speaker). 3 test skip vì thiếu checkpoint pyannote — **không** fallback
-sang fake rồi báo pass (spec 18 rule 6).
+multi-speaker) trên 2× Tesla T4. Không còn test nào skip: 2 checkpoint pyannote
+đã accept điều kiện và pin xong (mục 4).
 
 ## 3. Model weights (spec 11.2, 20)
 
@@ -46,30 +46,34 @@ Pin bằng `deploy/prestage_models.py`; runtime chỉ mount `/models` read-only.
 | `faster_whisper_large_v3` | `Systran/faster-whisper-large-v3` | `edaa852e…` | 2.9 GiB | pinned + verified |
 | `mossformer2_ss_16k` | `alibabasglab/MossFormer2_SS_16K` | `407cb030…` | 639 MiB | pinned + verified |
 | `3d_speaker_campplus` | `iic/speech_campplus_sv_zh_en_16k-common_advanced` (ModelScope) | `v1.0.0` | 27 MiB | pinned + verified |
-| `pyannote-community-1` | `pyannote/speaker-diarization-community-1` | — | — | **chặn: chưa accept terms** |
-| `pyannote_segmentation_3.0` | `pyannote/segmentation-3.0` | — | — | **chặn: chưa accept terms** |
+| `pyannote-community-1` | `pyannote/speaker-diarization-community-1` | `3533c8cf…` | 33 MiB | pinned + verified |
+| `pyannote_segmentation_3.0` | `pyannote/segmentation-3.0` | `e66f3d3b…` | 5.8 MiB | pinned + verified |
 | `sepformer_libri3mix` | `speechbrain/sepformer-libri3mix` | — | — | beta, chưa cần (M4) |
 | `multidecoder_dprnn` | `JunzheJosephZhu/MultiDecoderDPRNN` | — | — | `deny` production (spec 20) |
 | `gpu_gss`, `wesep` | — | — | — | không có weights / phase 2 |
 
-Vì 2 checkpoint pyannote chưa pin, `validate_for_environment(..., PRODUCTION)`
-**từ chối khởi động** — đúng hành vi spec yêu cầu.
+Cả 6 backend của M1 đã pin và verify:
+`python3 deploy/prestage_models.py --verify` → 6/6 `[ok]`.
 
-## 4. Blocker duy nhất
+## 4. Blocker cũ — đã gỡ
 
 `pyannote/speaker-diarization-community-1` và `pyannote/segmentation-3.0` là
-gated model. Token HF của tài khoản `khanh99` có `canReadGatedRepos: True`,
-nhưng tải file vẫn trả 403 *"you are not in the authorized list"* → tài khoản
-**chưa bấm accept điều kiện** trên trang model.
+gated model. Trước đây tải về trả 403 vì tài khoản chưa accept điều kiện. Sau
+khi accept, cả hai tải và pin bình thường; `SASTT_ENGINE=real` chạy được toàn bộ
+pipeline offline trên audio thật.
 
-Cách gỡ:
+Gỡ blocker này làm lộ 3 lỗi thật mà đường fake không thể phát hiện — đã sửa:
 
-1. Đăng nhập HF, mở 2 trang model, điền form điều kiện và accept (gated `auto`,
-   duyệt ngay).
-2. Chạy `python3 deploy/prestage_models.py --only diarization osd --models-dir /models`
-3. Chạy `pytest -m model` — 3 test đang skip sẽ chạy, gồm cả DoD end-to-end của M1.
+| Lỗi | Triệu chứng | Nguyên nhân |
+|---|---|---|
+| OSD chuyển đổi powerset | `mat1 and mat2 shapes cannot be multiplied (2356x3 and 7x3)` | `Inference` tự convert powerset→multilabel (hard) trước khi adapter tự convert soft; thiếu `skip_conversion=True` |
+| OSD gộp chunk | timestamp phồng lên ~20× (overlap 2.5–5 s bị báo 146–292 s) | pyannote chỉ overlap-add *sau* convert; với `skip_conversion` phải tự `Inference.aggregate` theo `model.receptive_field`, nếu không output per-chunk bị đọc phẳng thành timeline 1 s/frame |
+| Merge nhầm 2 người | hai nguồn của cùng vùng overlap bị gán chung một `session_speaker_id` | source bị reject tạo temporary ID nhưng không có cannot-link với source kia cùng crop, nên reconciliation gộp lại (spec 5.6, 5.8.7) |
 
-Sau đó `SASTT_ENGINE=real` sẽ chạy được toàn bộ pipeline trên audio thật.
+Ngoài ra `torch.device("cuda")` được đổi thành `cuda:0` trong adapter pyannote và
+CAM++: `clearvoice` gọi `torch.cuda.set_device()` toàn cục khi chọn GPU trống
+nhất, làm adapter khác bám theo và chia tensor lên 2 GPU (`weight is on cuda:1,
+different from other tensors on cuda:0`).
 
 ## 5. Đã kiểm chứng trên model thật (T4 16 GB)
 
@@ -83,6 +87,50 @@ không phải benchmark — gate DER/SI-SDRi/WER thuộc spec 16.4/16.5.
 | CAM++ | same-speaker cosine 0.77–0.95, cross-speaker 0.06–0.23 |
 | Hungarian linking | danh tính bám theo giọng kể cả khi đảo thứ tự source (S03 trên audio thật) |
 | ffmpeg decoder | decode WAV/FLAC/MP3/M4A/Ogg, giữ channel gốc, tạo mono 16 kHz |
+| pyannote community-1 | đếm đúng 2 speaker toàn phiên, trả regular + exclusive tracks |
+| pyannote segmentation-3.0 | vùng overlap 2393–5819 ms so với dựng thật 2500–5000 ms |
+
+### DoD M1 — một file thật chạy hết pipeline
+
+Gửi qua HTTP (`POST /v1/jobs`, `SASTT_ENGINE=real`), audio dựng từ VoxConverse:
+clean A 0–2.5 s · overlap 2.5–5 s · clean B 5–7.5 s.
+
+```text
+ start    end  ovl  src  status       label                 text
+    60   2200  no   —    anonymous    Speaker 1             Các bạn hãy đăng ký kênh…
+  2393   5713  yes  0    provisional  Temporary Speaker 1   Well, yeah, I mean, it totally is…
+  2393   5073  yes  1    provisional  Temporary Speaker 2   Hãy subscribe cho kênh La La School…
+  5819   7319  no   —    anonymous    Speaker 1             Hãy subscribe cho kênh La La School…
+```
+
+Hai segment overlap giữ nguyên timestamp chồng nhau và mang **hai**
+`session_speaker_id` khác nhau (spec 0.1.7). Mọi confidence là `null` +
+`confidence_status="uncalibrated"`. Retry cùng `Idempotency-Key` trả lại đúng
+`job_id` cũ với `created=false`, không chạy lại job (S13).
+
+Đây vẫn là **smoke test**, không phải benchmark: gate DER/SI-SDRi/WER cần corpus
+của spec 16.4.
+
+### Ma trận input đã chạy thật (spec 1.1, 3, 5.1.4)
+
+`tests/model/test_spec_conformance.py`, weights thật, 2× Tesla T4:
+
+| Hạng mục spec | Đã chạy | Kết quả |
+|---|---|---|
+| 1.1 container | WAV, FLAC, MP3, M4A/AAC, Ogg/Opus | cả 5 chạy hết pipeline |
+| 1.1 sample rate | 8 / 16 / 44.1 / 48 kHz | pass |
+| 1.1 + 5.1.4 kênh | 1, 2, 4, 6, 8 | giữ nguyên bản gốc, mono 16 kHz là derivative |
+| 3 — E2E RTF | 5.5 phút audio, một job/GPU | **RTF 0.297** (mục tiêu `<= 0.50`) |
+| 12 / S09 | production + research flag | từ chối khởi động, đúng error |
+
+RTF đo trên T4 với overlap ratio thấp; spec 3 nói con số này phải được xác nhận
+bằng **load test** (spec 16.1.6) chứ không phải một lần chạy — chưa làm.
+
+**Không có test nào khẳng định số người nhận diện được.** Đó là câu hỏi accuracy,
+thuộc benchmark spec 16.4/16.5, và spec 21.1 còn để ngỏ diarization default. Đo
+thực tế: 2 người → nhận 2, 3 người → nhận 3, nhưng **4 người → nhận 3 và 5 người
+→ nhận 3** (đếm thiếu). Con số này được ghi lại làm mốc, không được dùng làm gate
+và không sửa code để làm nó đẹp lên (spec 18 rule 5).
 
 ## 6. Scenario acceptance (spec 16.2)
 
@@ -119,29 +167,69 @@ Chạy trên fake adapters, không tải weights:
   fail closed (spec 5.10, 18 rule 7).
 - **Chưa có benchmark corpus** 10–20 giờ (spec 16.4) → chưa được phát biểu bất kỳ
   con số accuracy nào.
-- **OSD adapter chưa chạy thật**: pyannote.audio 4.x bỏ
-  `OverlappedSpeechDetection`, nên adapter tự chạy segmentation model rồi
-  binarise theo hysteresis onset/offset của spec 5.2. Đường này **chưa được
-  kiểm chứng** vì weights còn gated.
+- **OSD adapter đã chạy thật** nhưng chưa calibration: pyannote.audio 4.x bỏ
+  `OverlappedSpeechDetection`, nên adapter tự chạy segmentation model, tự
+  convert powerset→multilabel (soft), tự `Inference.aggregate` rồi binarise theo
+  hysteresis onset/offset của spec 5.2. Đường này đã kiểm chứng trên weights
+  thật, nhưng onset/offset vẫn là seed value của spec 5.2 — chốt sau benchmark
+  (spec 21.4).
 - **CAM++ checkpoint chưa chốt**: dùng bản `zh_en` vì phiên là tiếng Việt xen
   tiếng Anh, nhưng không bản nào train trên tiếng Việt → `benchmark_pending`
   trong manifest, chốt sau benchmark (spec 21.2).
 - **Nguồn gốc bản convert `faster-whisper-large-v3-turbo`**: SYSTRAN không phát
   hành bản CTranslate2 cho turbo, đang dùng bản convert cộng đồng (MIT). Licence
   review phải xác minh riêng lớp này (spec 20).
+- **GPU pinning là `cuda:0` cứng** trong adapter pyannote/CAM++ để tránh
+  `clearvoice` kéo tensor sang GPU khác. Đúng cho một worker một GPU (spec 11.1),
+  nhưng khi tách worker thì device phải lấy từ config chứ không hard-code.
 
-## 9. Chạy thử
+## 9. Còn nợ để đóng M1
+
+| Việc | Vì sao chưa xong |
+|---|---|
+| **`faster-whisper large-v3` chưa chạy dòng nào** | đã tải và pin 2.9 GiB, nhưng `asr.final_rescore: false` và không adapter nào load `final_model_path`. Spec 0.2 liệt kê nó là baseline "ASR final/offline" nên phải được kiểm chứng chạy được, dù mặc định tắt |
+| **`clearvoice` chưa pin GPU** | pyannote và CAM++ đã pin `cuda:0`, nhưng `clearvoice.SpeechModel` tự gọi `torch.cuda.set_device()` chọn "GPU trống nhất". Trên máy 2 GPU, MossFormer2 nhảy sang GPU 1 và giữ ~10.6 GB idle ở đó; khi VRAM eo hẹp gây `out of memory` và `invalid device ordinal` |
+| **Near-realtime chưa chạy trên model thật** | WebSocket + revision/replay mới chỉ chạy qua fake adapter. Spec 4.2/FR-011 chưa được kiểm chứng bằng weights thật |
+| **Chưa có load test** | RTF 0.297 là *một* lần chạy; spec 3 yêu cầu xác nhận bằng load test (spec 16.1.6), gồm p95, soak 30–60 phút và giới hạn VRAM/GPU 80% |
+
+## 10. Chạy thử
+
+Cần: Python 3.10+, ffmpeg, NVIDIA GPU + CUDA 12. Đo trên 2× Tesla T4.
 
 ```bash
 pip install -e ".[dev,api]"
-uvicorn --factory sastt.api.http:create_app --app-dir src --port 8000
+# adapter model thật (không nằm trong extras vì spec 11.1 muốn tách image):
+pip install "pyannote.audio==4.0.7" faster-whisper modelscope clearvoice addict
+pip install "numpy<2.0,>=1.24.3"   # clearvoice ghim numpy 1.x, cài sau cùng
+```
+
+Tải weights (cần HF token đã accept điều kiện 2 model pyannote gated):
+
+```bash
+HF_TOKEN=... python3 deploy/prestage_models.py --all --models-dir /models
+python3 deploy/prestage_models.py --verify     # hash lại weights trên đĩa
+```
+
+```bash
+SASTT_ENGINE=real uvicorn --factory sastt.api.http:create_app \
+    --app-dir src --port 8000
 # http://localhost:8000 — chọn kịch bản, chạy offline hoặc near-realtime
+# GET /readyz cho biết engine, config version và backend nào đã pin
+```
+
+Gửi audio thật:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/jobs \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: key-001' \
+  -H 'X-Tenant-Id: tenant-demo' \
+  -d "{\"audio_base64\": \"$(base64 -w0 file.wav)\"}"
+curl "http://127.0.0.1:8000/v1/jobs/<job_id>/result" -H 'X-Tenant-Id: tenant-demo'
 ```
 
 ```bash
 pytest                 # 206 test, không tải weights, không cần HF token
-pytest -m model        # cần weights trong /models; skip có lý do nếu thiếu
-ruff check src tests deploy && mypy
+pytest -m model        # 12 test, cần weights trong /models
+ruff check src tests deploy && ruff format --check src tests deploy && mypy
 python3 deploy/prestage_models.py --list      # xem backend nào đã pin
-python3 deploy/prestage_models.py --verify    # hash lại weights trên đĩa
 ```

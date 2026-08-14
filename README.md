@@ -11,15 +11,16 @@ Full detail — gates, weight pin state, blockers, known debt — lives in
 | Milestone | Scope | State |
 |---|---|---|
 | **M0 — Foundation and contracts** | package, config validation, domain models, ports, JSON Schema v2, fake adapters, state machine, revision/idempotency primitives, CI | **done** |
-| **M1 — Offline 2-speaker path** | ffmpeg decode, pyannote / faster-whisper / MossFormer2 / CAM++ adapters, pinned manifests, smoke tests | **~85%** — blocked on two gated pyannote checkpoints |
+| **M1 — Offline 2-speaker path** | ffmpeg decode, pyannote / faster-whisper / MossFormer2 / CAM++ adapters, pinned manifests, smoke tests | **~95%** — DoD passes on real weights; see status doc §9 |
 | M2 — Linking and Voice ID | pgvector registry, enrollment quality, deletion/audit | not started |
 | M3 — Near-realtime | queues, backpressure, latency instrumentation | partial (WebSocket, revisions and replay run in-process) |
 | M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | not started |
 | M5 — Production hardening | benchmark corpus, calibrators, load/soak, SBOM, capacity | not started |
 
 M0 acceptance (spec 18): scenarios **S01**, **S04** and **S12** pass structurally on fake
-adapters; S02, S03, S11 and S13 are covered too. On real weights, 9 model smoke tests
-pass and 3 skip with a reason until the pyannote checkpoints are staged.
+adapters; S02, S03, S11 and S13 are covered too. On real weights all **12** model smoke
+tests pass with no skips, including the M1 DoD: one real file end to end producing a
+non-overlap segment plus two concurrent overlap segments with distinct speakers.
 
 ## What is deliberately absent
 
