@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import io
 import struct
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +31,8 @@ DATASET = "diarizers-community/voxconverse"
 DATASET_FILE = "data/dev-00000-of-00005.parquet"
 SAMPLE_RATE = 16_000
 EXCERPT_SECONDS = 5.0
+#: Session bound of spec 0.1.1 / config ``product.max_session_speakers``.
+MAX_SESSION_SPEAKERS = 5
 
 
 @dataclass(frozen=True)
@@ -45,10 +49,47 @@ class TwoSpeakerFixture:
 
 
 def _write_wav(samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bytes:
-    pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+    """PCM16 WAV. ``samples`` is ``[n]`` for mono or ``[channels, n]`` otherwise."""
+    if samples.ndim == 1:
+        channels = 1
+        interleaved = samples
+    else:
+        channels = samples.shape[0]
+        interleaved = samples.T.reshape(-1)
+    pcm = (np.clip(interleaved, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+    block = channels * 2
     header = b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVEfmt "
-    header += struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16)
+    header += struct.pack("<IHHIIHH", 16, 1, channels, sample_rate, sample_rate * block, block, 16)
     return header + b"data" + struct.pack("<I", len(pcm)) + pcm
+
+
+def transcode(wav: bytes, suffix: str, extra: list[str] | None = None) -> bytes:
+    """Re-encode WAV bytes into another container with ffmpeg — spec 1.1.
+
+    ffmpeg cannot write most containers to a pipe, so this goes through a
+    temporary file. Skips rather than fails when the codec is unavailable: the
+    build's ffmpeg, not the product, would be at fault.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        destination = Path(tmp) / f"clip{suffix}"
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                "pipe:0",
+                *(extra or []),
+                str(destination),
+            ],
+            input=wav,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            pytest.skip(f"ffmpeg cannot produce {suffix}: {proc.stderr.decode()[:200]}")
+        return destination.read_bytes()
 
 
 @pytest.fixture(scope="session")
@@ -114,3 +155,71 @@ def two_speaker_session() -> TwoSpeakerFixture:
 @pytest.fixture(scope="session")
 def clean_speech_wav(two_speaker_session: TwoSpeakerFixture) -> bytes:
     return _write_wav(two_speaker_session.speaker_a)
+
+
+@pytest.fixture(scope="session")
+def real_speakers() -> list[np.ndarray]:
+    """Up to five distinct real speakers, one excerpt each — FR-004, spec 0.1.1.
+
+    Walks several VoxConverse recordings because a single one rarely has five
+    speakers with long enough turns.
+    """
+    try:
+        import pyarrow.parquet as pq
+        import soundfile as sf
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:  # pragma: no cover - optional test dependency
+        pytest.skip(f"missing test dependency: {exc}")
+
+    try:
+        parquet = hf_hub_download(
+            DATASET, DATASET_FILE, repo_type="dataset", cache_dir=str(TESTDATA_DIR / "hf")
+        )
+    except Exception as exc:  # noqa: BLE001 - offline CI must skip, not fail
+        pytest.skip(f"VoxConverse sample unavailable ({type(exc).__name__}); no network?")
+
+    span = int(EXCERPT_SECONDS * SAMPLE_RATE)
+    collected: list[np.ndarray] = []
+    for _, row in pq.read_table(parquet).to_pandas().iterrows():
+        audio, rate = sf.read(io.BytesIO(row["audio"]["bytes"]))
+        if rate != SAMPLE_RATE:
+            continue
+        per_speaker: dict[str, list[tuple[float, float]]] = {}
+        for start, end, speaker in zip(
+            row["timestamps_start"], row["timestamps_end"], row["speakers"], strict=False
+        ):
+            if end - start >= EXCERPT_SECONDS:
+                per_speaker.setdefault(str(speaker), []).append((float(start), float(end)))
+        for spans in per_speaker.values():
+            start = int(spans[0][0] * SAMPLE_RATE)
+            clip = audio[start : start + span].astype(np.float32)
+            if clip.size < span:
+                continue
+            peak = float(np.abs(clip).max()) or 1.0
+            collected.append(clip / peak * 0.7)
+            if len(collected) >= MAX_SESSION_SPEAKERS:
+                return collected
+    if len(collected) < 2:
+        pytest.skip("could not cut two distinct speakers from the dataset")
+    return collected
+
+
+def sequential_session(speakers: list[np.ndarray], gap_seconds: float = 0.5) -> np.ndarray:
+    """Speakers one after another with a silent gap — the S01 layout, no overlap."""
+    gap = np.zeros(int(gap_seconds * SAMPLE_RATE), dtype=np.float32)
+    parts: list[np.ndarray] = []
+    for clip in speakers:
+        parts.extend((clip, gap))
+    timeline = np.concatenate(parts)
+    return timeline / max(1.0, float(np.abs(timeline).max()))
+
+
+def overlap_at_start(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+    """Both speakers from the first sample, then one clean stretch each — S04."""
+    span = first.size
+    half = span // 2
+    timeline = np.zeros(span + span, dtype=np.float32)
+    timeline[:half] += first[:half] + second[:half]
+    timeline[half:span] += first[half:]
+    timeline[span : span + half] += second[half:]
+    return timeline / max(1.0, float(np.abs(timeline).max()))
