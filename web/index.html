@@ -142,7 +142,7 @@
       <p class="hint" id="scenario-hint" hidden>
         Kịch bản dựng sẵn là <b>tone tổng hợp</b> cho engine <code>fake</code>.
         Với engine thật chúng không chứa tiếng nói nên transcript sẽ rỗng —
-        hãy tải file audio thật lên.
+        hãy tải file audio thật lên. File tải lên được dùng cho <b>cả hai</b> nút.
       </p>
       <button id="run" class="primary">Chạy</button>
       <button id="stream">Chạy near-realtime</button>
@@ -304,6 +304,32 @@ function renderVersions(versions) {
   $("versions").textContent = parts ? `model versions — ${parts}` : "";
 }
 
+/** Decode any container the browser knows and resample to the 16 kHz mono PCM
+ *  the WebSocket ingest expects (spec 1.1). Without this, near-realtime could
+ *  only ever stream the built-in fixtures. */
+async function fileToPcm16k(file) {
+  const context = new AudioContext();
+  let decoded;
+  try {
+    decoded = await context.decodeAudioData(await file.arrayBuffer());
+  } finally {
+    context.close();
+  }
+  const offline = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start();
+  const samples = (await offline.startRendering()).getChannelData(0);
+
+  const pcm = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    const value = Math.max(-1, Math.min(1, samples[i]));
+    pcm[i] = value < 0 ? value * 0x8000 : value * 0x7fff;
+  }
+  return new Uint8Array(pcm.buffer);
+}
+
 async function fileToBase64(file) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";
@@ -356,10 +382,12 @@ async function runOffline() {
 }
 
 async function runStream() {
+  const file = $("upload").files[0];
   const scenario = $("scenario").value;
+  const source = file ? file.name : scenario;
   colors = new Map();
   busy(true);
-  setStatus({ "chế độ": "near-realtime", "nguồn": scenario, "trạng thái": "đang mở session…" });
+  setStatus({ "chế độ": "near-realtime", "nguồn": source, "trạng thái": "đang mở session…" });
 
   try {
     const session = await (await fetch("/v1/sessions", {
@@ -367,8 +395,11 @@ async function runStream() {
       body: JSON.stringify({ scenario }),
     })).json();
 
-    const wav = await (await fetch(`/v1/demo/scenarios/${scenario}/audio.wav`)).arrayBuffer();
-    const pcm = new Uint8Array(wav.slice(44));       // 16-bit mono 16 kHz
+    // The uploaded file wins: the scenario only picks fake adapters, and the
+    // real engine ignores it entirely.
+    const pcm = file
+      ? await fileToPcm16k(file)
+      : new Uint8Array((await (await fetch(`/v1/demo/scenarios/${scenario}/audio.wav`)).arrayBuffer()).slice(44));
     const frameBytes = session.frame_ms * session.sample_rate / 1000 * 2;
 
     const live = new Map();
@@ -387,7 +418,7 @@ async function runStream() {
         renderRows([...live.values()]);
       }
       setStatus({
-        "chế độ": "near-realtime", "nguồn": scenario,
+        "chế độ": "near-realtime", "nguồn": source,
         "trạng thái": event.type === "session.finalized" ? "đã finalize" : "đang stream…",
         "provisional": counts.provisional || 0,
         "revision": counts.revision || 0,
