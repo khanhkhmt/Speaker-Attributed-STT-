@@ -11,6 +11,7 @@ against prototypes built from clean speech that appears later (spec 4.1).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -68,6 +69,22 @@ from sastt.ports.registry import VoiceRegistry
 from sastt.ports.separation import SpeechSeparator
 
 MAX_CLEAN_PROTOTYPE_SEGMENTS = 3
+# A physical plausibility guard, not a calibrated ASR-confidence threshold. A
+# source can contain a valid one-word acknowledgement in a few hundred ms, but
+# four or more tokens require this much VAD-confirmed speech and timestamp span.
+# It keeps a separator artefact from becoming a convincing-looking transcript.
+MIN_SOURCE_SPEECH_MS_WITH_TRANSCRIPT = 100
+MIN_SOURCE_SPEECH_MS_PER_TOKEN = 60
+MIN_TOKENS_FOR_DENSITY_GATE = 4
+WARNING_UNRELIABLE_SEPARATED_TRANSCRIPT = "unreliable_separated_transcript"
+WARNING_UNRELIABLE_MIXTURE_TRANSCRIPT = "unreliable_mixture_transcript"
+WARNING_UNRELIABLE_NON_OVERLAP_TRANSCRIPT = "unreliable_non_overlap_transcript"
+
+
+def _report_stage(callback: Callable[[JobState], None] | None, state: JobState) -> None:
+    """Publish an offline job state at the moment its work begins (spec 8.1)."""
+    if callback is not None:
+        callback(state)
 
 
 @dataclass
@@ -132,6 +149,7 @@ class OfflinePipeline:
         job: JobRecord | None = None,
         session_id: str | None = None,
         state: SessionSpeakerState | None = None,
+        on_stage: Callable[[JobState], None] | None = None,
     ) -> OfflineResult:
         warnings: list[str] = []
         model_versions = ModelVersions(
@@ -145,6 +163,7 @@ class OfflinePipeline:
         session = session_id or job_id
 
         # --- PREPROCESSING (spec 5.1) --------------------------------------- #
+        _report_stage(on_stage, JobState.PREPROCESSING)
         asset = self.adapters.decoder.decode(payload, ctx.child("decode"))
         max_ms = int(self.config.audio.max_file_hours * 3_600_000)
         if asset.duration_ms > max_ms:
@@ -156,6 +175,7 @@ class OfflinePipeline:
         mono = asset.mono_16k
 
         # --- DIARIZING (spec 5.2) ------------------------------------------- #
+        _report_stage(on_stage, JobState.DIARIZING)
         diarization = self.adapters.diarizer.diarize(
             mono,
             ctx.child("diarization"),
@@ -184,12 +204,17 @@ class OfflinePipeline:
         self.build_global_speakers(state, diarization, overlap_regions, mono, ctx)
 
         # --- non-overlap ASR (spec 5.5, FR-005) ------------------------------ #
+        _report_stage(on_stage, JobState.TRANSCRIBING)
         speech = self.adapters.vad.detect(mono, ctx.child("vad"))
         groups: list[WordGroup] = []
-        groups.extend(self.transcribe_non_overlap(mono, speech, overlap_regions, ctx))
+        groups.extend(
+            self.transcribe_non_overlap(mono, speech, overlap_regions, ctx, warnings=warnings)
+        )
 
         # --- overlap routing and separation (spec 5.3, 5.4, 5.8) ------------- #
-        degraded = False
+        degraded = bool(warnings)
+        if overlap_regions:
+            _report_stage(on_stage, JobState.SEPARATING)
         for region in overlap_regions:
             count = estimate_source_count(CountingEvidence(), self.config)
             decision = route_overlap(region, count, self.config, osd_positive=True)
@@ -201,11 +226,13 @@ class OfflinePipeline:
             degraded = degraded or region_degraded
 
         # --- reconciliation and Voice ID (spec 5.9, 5.10) -------------------- #
+        _report_stage(on_stage, JobState.LINKING)
         self.reconcile_temporary_speakers(state, ctx)
         self.apply_voice_id(state, ctx)
         state.finalize_unresolved()
 
         # --- FUSING (spec 5.11) ---------------------------------------------- #
+        _report_stage(on_stage, JobState.FUSING)
         fusion = FusionEngine(
             session_id=session,
             state=state,
@@ -282,6 +309,8 @@ class OfflinePipeline:
         speech: list[TimeInterval],
         overlap_regions: list[OverlapRegion],
         ctx: CallContext,
+        *,
+        warnings: list[str] | None = None,
     ) -> list[WordGroup]:
         """Direct ASR on the non-overlap parts only (FR-005, FR-006)."""
         groups: list[WordGroup] = []
@@ -294,6 +323,10 @@ class OfflinePipeline:
             )
             words = words_owned_by(result.words, interval)
             if not words:
+                continue
+            if not is_plausible_transcript(tuple(words), [interval]):
+                if warnings is not None:
+                    warnings.append(WARNING_UNRELIABLE_NON_OVERLAP_TRANSCRIPT)
                 continue
             groups.append(
                 WordGroup(
@@ -331,13 +364,13 @@ class OfflinePipeline:
             context_ms, lower_bound_ms=mono.start_ms, upper_bound_ms=mono.end_ms
         )
         try:
-            groups, extra_warnings = self.separate_and_link(
+            groups, extra_warnings, separation_degraded = self.separate_and_link(
                 mono, region, padded, decision, separator, state, ctx
             )
         except SeparationFailedError:
             # Spec 15: retry once with a smaller crop, then fall back to mixture ASR.
             try:
-                groups, extra_warnings = self.separate_and_link(
+                groups, extra_warnings, separation_degraded = self.separate_and_link(
                     mono, region, region.interval, decision, separator, state, ctx
                 )
             except SeparationFailedError:
@@ -345,7 +378,7 @@ class OfflinePipeline:
                 ctx.metrics.increment(METRIC_DEGRADED_SESSION, reason="separation_failed")
                 return self.mixture_fallback(mono, region, decision, warnings), warnings, True
         warnings.extend(extra_warnings)
-        return groups, warnings, decision.degraded
+        return groups, warnings, decision.degraded or separation_degraded
 
     def _separator_for(self, decision: RouteDecision) -> SpeechSeparator | None:
         if decision.route is Route.SEPARATE_THREE_SOURCE_BETA:
@@ -361,7 +394,7 @@ class OfflinePipeline:
         separator: SpeechSeparator,
         state: SessionSpeakerState,
         ctx: CallContext,
-    ) -> tuple[list[WordGroup], list[str]]:
+    ) -> tuple[list[WordGroup], list[str], bool]:
         """Separate one region, link its sources, and emit one group per source."""
         requested = decision.requested_source_count or 2
         warnings: list[str] = []
@@ -383,11 +416,23 @@ class OfflinePipeline:
                 warnings.extend(flags)
 
             embeddings: list[SpeakerEmbedding | None] = []
-            source_buffers: list[AudioBuffer] = []
+            source_asr_buffers: list[AudioBuffer] = []
+            source_speech: list[list[TimeInterval]] = []
             for index in range(batch.source_count):
                 source = _source_buffer(batch, index, crop)
-                source_buffers.append(source)
-                embeddings.append(self.embed_buffer(source, owned, ctx, source_track=index))
+                asr_buffer = source.crop_ms(owned) if owned.duration_ms > 0 else source
+                speech = self.adapters.vad.detect(asr_buffer, ctx.child("vad"))
+                source_asr_buffers.append(asr_buffer)
+                source_speech.append(speech)
+                embeddings.append(
+                    self.embed_buffer(
+                        source,
+                        owned,
+                        ctx,
+                        source_track=index,
+                        speech_intervals=speech,
+                    )
+                )
 
             result = link_sources(
                 embeddings,
@@ -404,9 +449,8 @@ class OfflinePipeline:
             assigned_in_crop: list[str] = []
 
             for index, link in enumerate(result.decisions):
-                source = source_buffers[index]
                 asr = self.adapters.recognizer.transcribe(
-                    source.crop_ms(owned) if owned.duration_ms > 0 else source,
+                    source_asr_buffers[index],
                     ctx.child("asr"),
                     language=self.config.asr.language,
                     source_track=index,
@@ -414,6 +458,17 @@ class OfflinePipeline:
                 words = tuple(words_owned_by(asr.words, owned))
                 if not words:
                     continue
+                if not is_plausible_transcript(words, source_speech[index]):
+                    # The source has no VAD-confirmed speech, or its ASR text is
+                    # physically impossible for that amount of speech. Do not
+                    # silently drop the original overlap: retry it as a single
+                    # degraded mixture, which has no invented source identity.
+                    warnings.append(WARNING_UNRELIABLE_SEPARATED_TRANSCRIPT)
+                    return (
+                        self.mixture_fallback(mono, region, decision, warnings),
+                        warnings,
+                        True,
+                    )
 
                 speaker_id = link.session_speaker_id
                 if speaker_id is None:
@@ -487,7 +542,7 @@ class OfflinePipeline:
                         degraded_mode=decision.degraded,
                     )
                 )
-        return groups, warnings
+        return groups, warnings, False
 
     def mixture_fallback(
         self,
@@ -506,6 +561,10 @@ class OfflinePipeline:
         result = self.adapters.recognizer.transcribe(crop, ctx, language=self.config.asr.language)
         words = tuple(words_owned_by(result.words, region.interval))
         if not words:
+            return []
+        speech = self.adapters.vad.detect(crop, ctx.child("vad"))
+        if not is_plausible_transcript(words, speech):
+            warnings.append(WARNING_UNRELIABLE_MIXTURE_TRANSCRIPT)
             return []
         raw_scores = dict(result.raw_scores)
         if region.osd_activation is not None:
@@ -587,13 +646,18 @@ class OfflinePipeline:
         *,
         origin: EmbeddingOrigin = "separated",
         source_track: int | None = None,
+        speech_intervals: list[TimeInterval] | None = None,
     ) -> SpeakerEmbedding | None:
         """Embed a slice of clean or separated speech, honouring the gate of spec 5.6."""
         try:
             crop = buffer.crop_ms(interval)
         except SasttError:
             return None
-        speech = self.adapters.vad.detect(crop, ctx.child("vad"))
+        speech = (
+            speech_intervals
+            if speech_intervals is not None
+            else self.adapters.vad.detect(crop, ctx.child("vad"))
+        )
         try:
             return self.adapters.embedder.embed(
                 crop,
@@ -604,6 +668,25 @@ class OfflinePipeline:
             )
         except InsufficientSpeechForEmbeddingError:
             return None
+
+
+def is_plausible_transcript(words: tuple[Word, ...], speech_intervals: list[TimeInterval]) -> bool:
+    """Reject text impossible for the VAD-confirmed speech in an ASR input.
+
+    This is intentionally independent of Whisper's raw probability: that score
+    can be high for a language-model hallucination. It is also deliberately
+    permissive for one-to-three-token acknowledgements, which may be genuine
+    short speech.
+    """
+    speech_ms = sum(interval.duration_ms for interval in speech_intervals)
+    if speech_ms < MIN_SOURCE_SPEECH_MS_WITH_TRANSCRIPT:
+        return False
+    token_count = sum(max(1, len(word.text.split())) for word in words)
+    if token_count < MIN_TOKENS_FOR_DENSITY_GATE:
+        return True
+    minimum_ms = token_count * MIN_SOURCE_SPEECH_MS_PER_TOKEN
+    word_span_ms = max(word.end_ms for word in words) - min(word.start_ms for word in words)
+    return speech_ms >= minimum_ms and word_span_ms >= minimum_ms
 
 
 def words_owned_by(words: list[Word], interval: TimeInterval) -> list[Word]:

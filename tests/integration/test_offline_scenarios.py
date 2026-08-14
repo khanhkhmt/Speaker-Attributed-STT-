@@ -46,6 +46,27 @@ def concurrent_pairs(
     ]
 
 
+def test_pipeline_reports_states_when_each_stage_starts(
+    calibrated_config: SasttConfig, ctx: CallContext
+) -> None:
+    """Spec 8.1 status must reflect work in progress, not a pre-filled final stage."""
+    scenario = load_scenario("s02_two_speaker_overlap.json")
+    pipeline = OfflinePipeline(calibrated_config, build_adapters(scenario))
+    stages: list[JobState] = []
+
+    result = pipeline.run(scenario_pcm(scenario), ctx, on_stage=stages.append)
+
+    assert result.succeeded
+    assert stages == [
+        JobState.PREPROCESSING,
+        JobState.DIARIZING,
+        JobState.TRANSCRIBING,
+        JobState.SEPARATING,
+        JobState.LINKING,
+        JobState.FUSING,
+    ]
+
+
 class TestS01FiveSpeakersNoOverlap:
     def test_five_stable_speakers(self, calibrated_config: SasttConfig, ctx: CallContext) -> None:
         _, result = run_offline("s01_five_speakers_no_overlap.json", calibrated_config, ctx)

@@ -4,7 +4,7 @@ repository: https://huggingface.co/Systran/faster-whisper-large-v3
 source: huggingface
 repo_id: Systran/faster-whisper-large-v3
 revision: edaa852ec7e145841d8ffdb056a99866b5f0a478
-sha256: 7534117939cdbec354e36957104fef1baa53af1b1b98291a10352f58a85b5536
+sha256: fbf9e7a7570fdee0bf2b1f4992e0dc6dd31bf8d07d677dfc384448a5de56fd85
 code_license: MIT
 weight_license: MIT
 training_data_caveat: Optional offline final rescore (spec 0.2, 5.5). Only active
@@ -18,20 +18,20 @@ files:
   sha256: 684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1
   size_bytes: 1
 - path: .cache/huggingface/download/config.json.metadata
-  sha256: 088954ee01ef3f67bcd4e74e46cf2ae6dcfe7ef7b6bcac79dcc91b24d90f1cbb
+  sha256: 86f5c45d77a2e5d3411dcf6db7b0b1cf2bc4fff3d11251c879a273911d23fd6a
   size_bytes: 101
 - path: .cache/huggingface/download/model.bin.metadata
-  sha256: 761f10118811146c55af175f139b921f5d35c31b234cadf890d2b47b213d0d1d
-  size_bytes: 124
+  sha256: c9053f2b0173929f94508b90b639b25a91777782d4dc585df0256025ed0218d8
+  size_bytes: 125
 - path: .cache/huggingface/download/preprocessor_config.json.metadata
-  sha256: f875531fa3cf40be4938b890433e8fbb381f55fdd9b9f0cd90a0bfc7c4033855
-  size_bytes: 100
+  sha256: c4a8d505ef8e9bb6fcc1fd6c56e5f067fe072f8588d8c083b86da9d98e4c7c44
+  size_bytes: 101
 - path: .cache/huggingface/download/tokenizer.json.metadata
-  sha256: 594d762815e1c64d7b1df1ff1cade9103aadb917b77e11796be9a22d625155b4
-  size_bytes: 100
+  sha256: a95d3bfb772f38c45c1fa536ca8283b13fc1277b9019ea02400b8199a3b02d42
+  size_bytes: 101
 - path: .cache/huggingface/download/vocabulary.json.metadata
-  sha256: ed236d513299cb6c88929258b8ca1ff25b3947e5f00bf9db5986b3aff7de2b9b
-  size_bytes: 100
+  sha256: d46255574e941c3b29174fc1260701f9e66eca59dd469bb9ee63b74656c07d93
+  size_bytes: 101
 - path: config.json
   sha256: a9306624f5ec14270a014b647e5c316b6e03a662c369758d1b90697a7b0655b9
   size_bytes: 2394

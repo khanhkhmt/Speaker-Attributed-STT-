@@ -4,7 +4,7 @@ repository: https://huggingface.co/alibabasglab/MossFormer2_SS_16K
 source: huggingface
 repo_id: alibabasglab/MossFormer2_SS_16K
 revision: 407cb030cd66340918ebb6c8cc63b18f8592cdbe
-sha256: 3d99151c0ca5ec283629b252672e91061775952b7e2d8dcbe8b9f38dd1240d99
+sha256: 0de7c06339751b1026484f0d33a028ac712cfe020a3ab13c4417d48da34f6e60
 code_license: Apache-2.0
 weight_license: Apache-2.0
 training_data_caveat: ClearerVoice-Studio weights, Apache-2.0. K=2, 16 kHz in and
@@ -19,11 +19,11 @@ files:
   sha256: 684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1
   size_bytes: 1
 - path: .cache/huggingface/download/last_best_checkpoint.metadata
-  sha256: 19fd11307bb3282fc137abce9b3e47f0bc30f3cf32587c383c25a8c25682bf64
+  sha256: d79da23ddc9252cd9dbc345fa60a5bcfefcef34ad2c202757268a044dc015ff3
   size_bytes: 100
 - path: .cache/huggingface/download/last_best_checkpoint.pt.metadata
-  sha256: 107b8d27b5879f30bcf9039ae0325399a2bee7c641b947da269ce37272bcdcf8
-  size_bytes: 124
+  sha256: a3a82b7f405cf86bd06716aa773fe9d84d22ec9eea4fccaa992932d66dba2888
+  size_bytes: 125
 - path: last_best_checkpoint
   sha256: 315744c841441f8831cb2f896e06102b4d864776bf272febaa30c639c903e1c0
   size_bytes: 24

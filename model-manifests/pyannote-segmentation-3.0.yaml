@@ -4,7 +4,7 @@ repository: https://huggingface.co/pyannote/segmentation-3.0
 source: huggingface
 repo_id: pyannote/segmentation-3.0
 revision: e66f3d3b9eb0873085418a7b813d3b369bf160bb
-sha256: fe70a155f61b66c2abd874dc8909019fb16769dafc9f7a69ef2682aaa8666a99
+sha256: 49759feb2dbadef247b546cb5a5507eb5cefb0c98deac23dae659ee85045034c
 code_license: MIT
 weight_license: MIT
 training_data_caveat: Gated model. Input 10 s / 16 kHz with max_speakers_per_frame=2,
@@ -20,13 +20,13 @@ files:
   sha256: 684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1
   size_bytes: 1
 - path: .cache/huggingface/download/LICENSE.metadata
-  sha256: 43f351776aa1d1aeb797746ee311de466d6d9456c4119378790f08d84c9177bb
+  sha256: 292bdebaaff1c671d12f19d2f6ce715005f8ea0560cc8863f6499efca5814618
   size_bytes: 101
 - path: .cache/huggingface/download/config.yaml.metadata
-  sha256: 216241891f47170167e4ac8b557283555a09dc56725e9bea1bdba9d7b9d0ee47
-  size_bytes: 100
+  sha256: 35322780c5951d5947eae031fd2fd1fcf49512fb4c38a26b5ec845bfa1c049b4
+  size_bytes: 101
 - path: .cache/huggingface/download/pytorch_model.bin.metadata
-  sha256: 74b255d719dde9cc5be22d4823b3e54aebcf06187a0dd6e3dfd94d4e6ff54ee8
+  sha256: 6c8fe3de06515bc6c056facc417a3e26632f20d82e91229f5c87cc7ea54048fe
   size_bytes: 125
 - path: LICENSE
   sha256: 63a777ad4b3c7aed4b260b084d8fb49ec781c46c70c6b599ca5d2402ef7ebe50

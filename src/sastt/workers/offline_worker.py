@@ -52,15 +52,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = REPO_ROOT / "configs" / "default.yaml"
 MANIFEST_DIR = REPO_ROOT / "model-manifests"
 
-#: States a successful batch job walks through (spec 8.1).
-PIPELINE_STATES = (
-    JobState.PREPROCESSING,
-    JobState.DIARIZING,
-    JobState.TRANSCRIBING,
-    JobState.LINKING,
-    JobState.FUSING,
-)
-
 
 class OfflineWorker:
     """One consumer of the batch queues."""
@@ -151,9 +142,6 @@ class OfflineWorker:
             if scenario_name
             else None
         )
-        for state in PIPELINE_STATES:
-            self.jobs.update_state(task.tenant_id, task.job_id, state)
-
         ctx = CallContext(
             stage="offline_job",
             timeout_seconds=float(task.payload.get("timeout_seconds", 3600)),
@@ -163,14 +151,25 @@ class OfflineWorker:
         language = task.payload.get("language")
         if language is not None and not isinstance(language, str):
             raise SasttError("task language must be a string or null")
+        # adapters() is what populates self._config, so it has to run first.
+        adapters = self.adapters(scenario)
         job_config = self._config.model_copy(
             update={"asr": self._config.asr.model_copy(update={"language": language})}
         )
+
+        def update_stage(state: JobState) -> None:
+            self.jobs.update_state(task.tenant_id, task.job_id, state)
+
         result = OfflinePipeline(
             job_config,
-            self.adapters(scenario),
+            adapters,
             calibrator=load_confidence_calibrator(job_config.confidence.calibration_path),
-        ).run(audio, ctx, session_id=task.job_id)
+        ).run(
+            audio,
+            ctx,
+            session_id=task.job_id,
+            on_stage=update_stage,
+        )
 
         segments = [segment.to_public_dict() for segment in result.segments]
         self.jobs.save_result(

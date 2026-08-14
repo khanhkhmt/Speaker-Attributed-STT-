@@ -4,7 +4,7 @@ repository: https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2
 source: huggingface
 repo_id: deepdml/faster-whisper-large-v3-turbo-ct2
 revision: 4df90f75321148c3a29a9e2351b7ddf8f5b115a8
-sha256: d114ac3db6420d38bad2445a8d8827e509c0f9eb1d46df60bb698dca3f54828c
+sha256: a323d266c0ff3eaa0a7433fd227012b473be50e6021b6973a081a2ca3ec49e29
 code_license: MIT
 weight_license: MIT
 training_data_caveat: Realtime default of spec 0.2 (large-v3-turbo). SYSTRAN publishes
@@ -21,20 +21,20 @@ files:
   sha256: 684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1
   size_bytes: 1
 - path: .cache/huggingface/download/config.json.metadata
-  sha256: 254a09710736458fa365b00a14f76fb2eb96823b1d687d0860cb4d114e28f895
-  size_bytes: 100
+  sha256: 382e51dc4a51a01875c20a42cad6512a47eaa1d713e815c99fc36df6bc8d05a7
+  size_bytes: 101
 - path: .cache/huggingface/download/model.bin.metadata
-  sha256: 4013788a1c9072e05e91129693f665830f575babdd8f8d96fd760cafe2943f81
+  sha256: 6392e2bb3528a3ed07dd63d53166d7e003e9ebc98196a7b8bd8b043f2826dfab
   size_bytes: 125
 - path: .cache/huggingface/download/preprocessor_config.json.metadata
-  sha256: 191913ca3f318f2009cf641fbf76b39f0de0aa44a9544a75611840dd3f039cee
+  sha256: a005828ccca660d14c1118a3cb2c60e14db78a4c7ea71607d65bd6bdfa5143f8
   size_bytes: 101
 - path: .cache/huggingface/download/tokenizer.json.metadata
-  sha256: ca9a3328567097a91cda0896015cd5f03e0e5b02bb3d1741a067d573bbd778af
+  sha256: 9056db33307f7456871fdd058e9344182d9e922f7491f490b0b86186bc05c90f
   size_bytes: 101
 - path: .cache/huggingface/download/vocabulary.json.metadata
-  sha256: 6e21220017df7614f18c280469ecdb9d92c09e22c0a309e4a887f851e0c51c78
-  size_bytes: 100
+  sha256: b318bfe75cccc0eea0a502f58ca46db224332e99c14d6ef3f2aa6c3987c6c5f2
+  size_bytes: 101
 - path: config.json
   sha256: b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e
   size_bytes: 2263

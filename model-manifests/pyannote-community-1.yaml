@@ -4,7 +4,7 @@ repository: https://huggingface.co/pyannote/speaker-diarization-community-1
 source: huggingface
 repo_id: pyannote/speaker-diarization-community-1
 revision: 3533c8cf8e369892e6b79ff1bf80f7b0286a54ee
-sha256: 087336c77dbc524dfae5a1e05e2b84415a930ec334b0b4ad7de43c6d0a572830
+sha256: eabd7d050dd61235e21d86894510fd4990556e5f00477e636353849ddc6edf35
 code_license: MIT
 weight_license: CC-BY-4.0
 training_data_caveat: 'Gated pipeline: conditions accepted on the Hugging Face model
@@ -21,19 +21,19 @@ files:
   sha256: 684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1
   size_bytes: 1
 - path: .cache/huggingface/download/config.yaml.metadata
-  sha256: b64cc0b33b3e42db86f607ee388e5349c01965e55b03357fb43c1deafacfdf30
-  size_bytes: 100
+  sha256: 1880faa2f22730f39805e398a8a013ea571d6ca2c35731dbdb01b876a1ad7fb6
+  size_bytes: 101
 - path: .cache/huggingface/download/embedding/pytorch_model.bin.metadata
-  sha256: e949f25189f23db19f9a640f994787d5c55ca8aa78d88c03f6a86bc19064e36f
+  sha256: 9e3250ef8458782e24a2dd69c115200646cf4f950676b20e500b0a5be49411b8
   size_bytes: 125
 - path: .cache/huggingface/download/plda/plda.npz.metadata
-  sha256: 71e6ed73ba42bd6c85c3100e4df6ac082849b42f9aa0485013384387995266af
-  size_bytes: 124
+  sha256: e5ba13d89f3c471f00118f6a1724ad711ab6ccc5c16e7e06d427865f32fb0a4d
+  size_bytes: 125
 - path: .cache/huggingface/download/plda/xvec_transform.npz.metadata
-  sha256: ee3cfbb6b65e910022f96978246605062b61959caf112ebc82f7ce4dfa970799
+  sha256: 830155285c1230e738dd7d9df1b2d4a2a6575f8cda2a05d8d3afa448596d017d
   size_bytes: 125
 - path: .cache/huggingface/download/segmentation/pytorch_model.bin.metadata
-  sha256: dad6bca8d37fca090dda6f07b5de97ec0ca8e9a3aaab4ea140dd4b536e46769a
+  sha256: 3d98c728b0166d110982c365e701b2561e525d26a89b3b18c696311fae20df98
   size_bytes: 125
 - path: config.yaml
   sha256: 5ce2bfa9a938dc132cec1172592d65173cbb8f444ea1e4133f10f9391de155be
