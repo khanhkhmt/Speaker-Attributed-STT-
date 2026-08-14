@@ -1,366 +1,417 @@
 <!doctype html>
 <html lang="vi">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Speaker-Attributed STT — demo console</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speaker-Attributed STT</title>
 <style>
   :root {
-    color-scheme: dark;
-    --bg: #0d1117; --panel: #161b22; --line: #262d38; --ink: #e6edf3;
-    --muted: #8b949e; --accent: #58a6ff; --warn: #d29922; --bad: #f85149; --ok: #3fb950;
-    --spk1: #58a6ff; --spk2: #bc8cff; --spk3: #3fb950; --spk4: #f0883e; --spk5: #ff7b9c;
-    --tmp: #8b949e;
+    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --ink: #e6e9ef; --dim: #949cad; --faint: #6b7383;
+    --accent: #4f8cff; --warn: #f0a848; --bad: #f0685f;
+    --spk1: #4f8cff; --spk2: #46c98b; --spk3: #c78bff;
+    --spk4: #f0a848; --spk5: #4fd0d8; --unknown: #6b7383;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink);
-    font: 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; }
-  header { padding: 14px 20px; border-bottom: 1px solid var(--line);
-    display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
-  h1 { font-size: 16px; margin: 0; font-weight: 650; }
-  .sub { color: var(--muted); font-size: 12px; }
-  .banner { margin: 0; padding: 10px 20px; background: #2b2200; color: #f0d68a;
-    border-bottom: 1px solid #4a3a00; font-size: 13px; }
-  main { display: grid; grid-template-columns: 300px 1fr; gap: 0; min-height: calc(100vh - 100px); }
-  aside { border-right: 1px solid var(--line); padding: 16px 18px; }
-  section { padding: 16px 20px; overflow-x: auto; }
-  label { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 5px; }
-  select, button { font: inherit; border-radius: 6px; border: 1px solid var(--line);
-    background: var(--panel); color: var(--ink); padding: 7px 10px; }
-  button { cursor: pointer; width: 100%; margin-top: 8px; }
-  button:hover:not(:disabled) { border-color: var(--accent); }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.55 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+  header .meta { color: var(--faint); font-size: 12px; }
+  .engine {
+    font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+    background: rgba(79,140,255,.16); color: var(--accent);
+  }
+  .engine.fake { background: rgba(240,168,72,.16); color: var(--warn); }
+
+  .notice {
+    margin: 0; padding: 9px 20px; font-size: 12.5px;
+    border-bottom: 1px solid var(--line); color: var(--dim);
+  }
+  .notice.fake { background: rgba(240,168,72,.10); color: var(--warn); }
+  .notice b { color: var(--ink); }
+
+  main { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 18px; padding: 18px 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 15px 16px; margin-bottom: 14px;
+  }
+  .card h2 {
+    margin: 0 0 12px; font-size: 11px; font-weight: 650;
+    letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
+  }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 12px 0 5px; }
+  label:first-of-type { margin-top: 0; }
+  select, input[type=file] {
+    width: 100%; padding: 8px 9px; border-radius: 7px;
+    border: 1px solid var(--line); background: #11141a; color: var(--ink); font-size: 13px;
+  }
+  button {
+    width: 100%; margin-top: 10px; padding: 10px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: #1d2129; color: var(--ink);
+    font-size: 13.5px; font-weight: 550;
+  }
+  button:hover:not(:disabled) { border-color: #38405020; background: #232833; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { background: #3f7bea; }
   button:disabled { opacity: .45; cursor: not-allowed; }
-  button.primary { background: #1f6feb; border-color: #1f6feb; }
-  select { width: 100%; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-    padding: 12px 14px; margin-bottom: 14px; }
-  .card h2 { font-size: 13px; margin: 0 0 10px; text-transform: uppercase;
-    letter-spacing: .06em; color: var(--muted); font-weight: 600; }
-  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
-  .kv dt { color: var(--muted); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
-  .lane { position: relative; height: 30px; margin-bottom: 5px; }
-  .lane-label { position: absolute; left: 0; top: 0; width: 130px; font-size: 12px;
-    color: var(--muted); line-height: 30px; white-space: nowrap; overflow: hidden; }
-  .track { position: absolute; left: 138px; right: 0; top: 0; height: 30px;
-    background: #10151d; border-radius: 4px; }
-  .seg { position: absolute; top: 3px; height: 24px; border-radius: 4px; font-size: 11px;
-    line-height: 24px; padding: 0 6px; overflow: hidden; white-space: nowrap;
-    color: #0d1117; font-weight: 600; }
-  .seg.prov { opacity: .55; border: 1px dashed rgba(255,255,255,.6); }
-  .ruler { position: relative; height: 18px; margin: 0 0 6px 138px; color: var(--muted);
-    font-size: 11px; border-top: 1px solid var(--line); }
-  .ruler span { position: absolute; top: 2px; transform: translateX(-50%); }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line);
-    vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase;
-    letter-spacing: .05em; }
-  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
-  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px;
-    border: 1px solid var(--line); color: var(--muted); margin-right: 4px; }
-  .pill.ov { border-color: #6e4a00; color: var(--warn); }
-  .pill.null { border-color: #30363d; }
-  .log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
-    max-height: 320px; overflow-y: auto; }
-  .log div { padding: 2px 0; border-bottom: 1px solid #1c2229; }
-  .log .final { color: var(--ok); } .log .rev { color: var(--accent); }
-  .log .warn { color: var(--warn); } .log .prov { color: var(--muted); }
-  .empty { color: var(--muted); padding: 30px 0; text-align: center; }
-  code { background: #0b0f14; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+  dl.kv { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 0; font-size: 12.5px; }
+  dl.kv dt { color: var(--faint); }
+  dl.kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; word-break: break-all; }
+
+  /* ---- timeline: the product's point is that overlap stays two segments ---- */
+  .ruler { position: relative; height: 16px; margin-left: 108px; color: var(--faint); font-size: 10.5px; }
+  .ruler span { position: absolute; transform: translateX(-50%); }
+  .lane { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .lane-name {
+    width: 98px; flex: none; font-size: 12px; font-weight: 600;
+    text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .track {
+    position: relative; flex: 1; height: 30px; border-radius: 6px;
+    background: #11141a; border: 1px solid var(--line); overflow: hidden;
+  }
+  .band {
+    position: absolute; top: 0; bottom: 0; pointer-events: none;
+    background: repeating-linear-gradient(45deg,
+      rgba(240,104,95,.16) 0 6px, rgba(240,104,95,.05) 6px 12px);
+    border-left: 1px solid rgba(240,104,95,.45);
+    border-right: 1px solid rgba(240,104,95,.45);
+  }
+  .seg {
+    position: absolute; top: 4px; bottom: 4px; border-radius: 4px;
+    padding: 0 6px; font-size: 11px; line-height: 22px; color: #08090c;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550;
+  }
+  .seg.provisional { opacity: .6; border: 1px dashed rgba(255,255,255,.5); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; padding: 0 10px 8px; font-size: 10.5px; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
+  }
+  td { padding: 9px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+  tr.overlap td { background: rgba(240,104,95,.055); }
+  .time { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+  .who { font-weight: 600; }
+  .sub { color: var(--faint); font-size: 11px; }
+
+  .pill {
+    display: inline-block; padding: 1px 7px; margin: 1px 3px 1px 0; border-radius: 999px;
+    font-size: 10.5px; background: #232833; color: var(--dim); white-space: nowrap;
+  }
+  .pill.ov { background: rgba(240,104,95,.15); color: var(--bad); }
+  .pill.null { background: transparent; border: 1px dashed var(--line); color: var(--faint); }
+
+  .empty { color: var(--faint); text-align: center; padding: 30px 0; margin: 0; font-size: 13px; }
+  .empty.warn { color: var(--warn); }
+  .hint {
+    margin: 7px 0 0; padding: 8px 10px; border-radius: 6px; font-size: 11.5px;
+    background: rgba(240,168,72,.10); color: var(--warn); line-height: 1.5;
+  }
+  .hint b, .hint code { color: var(--ink); }
+  .err { color: var(--bad); }
+  footer { padding: 4px 20px 22px; color: var(--faint); font-size: 11.5px; }
 </style>
 </head>
 <body>
+
 <header>
-  <h1>Speaker-Attributed STT — demo console</h1>
-  <span class="sub" id="envline">đang tải…</span>
+  <h1>Speaker-Attributed STT</h1>
+  <span class="engine" id="engine">…</span>
+  <span class="meta" id="limits"></span>
 </header>
-<p class="banner" id="banner">…</p>
+<p class="notice" id="notice">đang tải…</p>
 
 <main>
-  <aside>
+  <div>
     <div class="card">
-      <h2>Kịch bản</h2>
-      <label for="scenario">Chọn phiên</label>
+      <h2>Nguồn audio</h2>
+      <label for="upload">Tải file lên (WAV/FLAC/MP3/M4A/Ogg)</label>
+      <input id="upload" type="file" accept="audio/*">
+      <label for="scenario">hoặc chọn kịch bản dựng sẵn</label>
       <select id="scenario"></select>
-      <label for="speed">Tốc độ stream</label>
-      <select id="speed">
-        <option value="1">1× (thời gian thực)</option>
-        <option value="4" selected>4× (nhanh)</option>
-        <option value="0">Tức thì</option>
-      </select>
-      <label for="upload">Hoặc tải audio thật lên</label>
-      <input id="upload" type="file" accept="audio/*" disabled
-             style="width:100%;font-size:12px;color:var(--muted)" />
-      <button id="run-offline" class="primary">Chạy job offline</button>
-      <button id="run-stream">Chạy near-realtime</button>
-      <button id="test-resume" disabled>Test reconnect / replay</button>
+      <p class="hint" id="scenario-hint" hidden>
+        Kịch bản dựng sẵn là <b>tone tổng hợp</b> cho engine <code>fake</code>.
+        Với engine thật chúng không chứa tiếng nói nên transcript sẽ rỗng —
+        hãy tải file audio thật lên.
+      </p>
+      <button id="run" class="primary">Chạy</button>
+      <button id="stream">Chạy near-realtime</button>
     </div>
-    <div class="card">
-      <h2>Phiên hiện tại</h2>
-      <dl class="kv" id="meta"><dt>trạng thái</dt><dd>chưa chạy</dd></dl>
-    </div>
-    <div class="card">
-      <h2>Model versions</h2>
-      <dl class="kv" id="models"><dt>—</dt><dd>—</dd></dl>
-    </div>
-  </aside>
 
-  <section>
     <div class="card">
-      <h2>Timeline theo người nói</h2>
-      <div id="timeline"><p class="empty">Chọn một kịch bản rồi bấm chạy.</p></div>
+      <h2>Phiên</h2>
+      <dl class="kv" id="status"><dt>trạng thái</dt><dd>chưa chạy</dd></dl>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Ai nói lúc nào</h2>
+      <div id="timeline"><p class="empty">Chọn nguồn audio rồi bấm chạy.</p></div>
     </div>
 
     <div class="card">
       <h2>Transcript</h2>
       <table>
-        <thead><tr>
-          <th style="width:130px">thời gian</th><th style="width:170px">người nói</th>
-          <th>nội dung</th><th style="width:210px">metadata</th>
-        </tr></thead>
-        <tbody id="segments"><tr><td colspan="4" class="empty">chưa có dữ liệu</td></tr></tbody>
+        <thead><tr><th style="width:96px">Thời gian</th><th style="width:150px">Người nói</th>
+                   <th>Nội dung</th><th style="width:210px">Metadata</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="4" class="empty">chưa có dữ liệu</td></tr></tbody>
       </table>
     </div>
-
-    <div class="card" id="events-card" hidden>
-      <h2>Event stream (spec 8.2)</h2>
-      <div class="log" id="events"></div>
-    </div>
-  </section>
+  </div>
 </main>
+
+<footer id="versions"></footer>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const SPK_COLORS = ["var(--spk1)","var(--spk2)","var(--spk3)","var(--spk4)","var(--spk5)"];
-let speakerColor = new Map();
-let currentSession = null;
-let lastSeq = 0;
+const PALETTE = ["var(--spk1)", "var(--spk2)", "var(--spk3)", "var(--spk4)", "var(--spk5)"];
+let colors = new Map();
 
-function colorFor(id) {
-  if (!speakerColor.has(id)) {
-    const label = String(id);
-    const color = label.startsWith("tmp") ? "var(--tmp)" : SPK_COLORS[speakerColor.size % 5];
-    speakerColor.set(id, color);
-  }
-  return speakerColor.get(id);
+/** Unknown is the absence of an identity, not a person: it never takes a speaker colour. */
+function colorFor(segment) {
+  const id = segment.session_speaker_id;
+  if (segment.identity_status === "unknown") return "var(--unknown)";
+  if (!colors.has(id)) colors.set(id, PALETTE[colors.size % PALETTE.length]);
+  return colors.get(id);
 }
-const fmt = (ms) => `${String(Math.floor(ms/60000)).padStart(2,"0")}:` +
-  `${String(Math.floor(ms/1000)%60).padStart(2,"0")}.${String(ms%1000).padStart(3,"0")}`;
+
+const fmt = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, "0")}:` +
+  `${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}.${String(ms % 1000).padStart(3, "0")}`;
+
+function setStatus(pairs) {
+  $("status").innerHTML = Object.entries(pairs)
+    .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+}
 
 async function boot() {
   const ready = await (await fetch("/readyz")).json();
-  $("envline").textContent =
-    `engine=${ready.engine} · env=${ready.environment} · ${ready.config_version} · ` +
-    `tối đa ${ready.max_session_speakers} người/phiên, ${ready.max_supported_concurrent_speakers} người nói đồng thời`;
-  const pinned = ready.models.filter(m => m.pinned).length;
-  $("banner").innerHTML = ready.engine === "fake"
-    ? `<b>Engine = fake (Milestone 0).</b> Kết quả chỉ chứng minh <i>cấu trúc</i> pipeline: định tuyến overlap,
-       tách nguồn, gán người nói, revision. Đây <b>không phải</b> kết quả model thật và không dùng để đánh giá
-       độ chính xác (spec 19.1, 18 rule 6). Weights đã pin: ${pinned}/${ready.models.length}.`
-    : `<b>Engine = ${ready.engine}.</b> Weights đã pin: ${pinned}/${ready.models.length}.`;
 
-  if (ready.engine !== "fake") {
-    $("upload").disabled = false;
-    $("upload").title = "WAV/FLAC/MP3/M4A/Ogg, tối đa 4 giờ";
-  } else {
-    $("upload").title = "cần SASTT_ENGINE=real";
-  }
+  // "allow" and "production_candidate" are the backends V1 actually uses. The
+  // rest are deliberately unpinned - Multi-Decoder DPRNN is even `deny` in
+  // production (spec 20) - so counting them as missing would be misleading.
+  const inScope = ready.models.filter(m => ["allow", "production_candidate"].includes(m.production_action));
+  const pinned = inScope.filter(m => m.pinned).length;
+  const outOfScope = ready.models.length - inScope.length;
+
+  const fake = ready.engine === "fake";
+  $("engine").textContent = `engine = ${ready.engine}`;
+  $("engine").className = fake ? "engine fake" : "engine";
+  $("limits").textContent =
+    `tối đa ${ready.max_session_speakers} người/phiên · ${ready.max_supported_concurrent_speakers} người nói đồng thời · ${ready.config_version}`;
+
+  $("notice").className = fake ? "notice fake" : "notice";
+  $("notice").innerHTML = fake
+    ? `<b>Engine giả lập (Milestone 0).</b> Kết quả chỉ minh hoạ <i>cấu trúc</i> pipeline,
+       không phải kết quả model và không dùng để đánh giá độ chính xác (spec 18 rule 6, 19.1).`
+    : `<b>${pinned}/${inScope.length} backend V1 đã pin</b> và verify theo revision + SHA-256.
+       ${outOfScope} backend khác cố ý chưa pin vì ngoài phạm vi V1 (beta, phase 2, hoặc bị
+       <code>deny</code> trong production theo spec 20). Mọi confidence là <code>null</code>
+       cho tới khi có calibration release.`;
+
+  $("upload").disabled = fake;
+  if (fake) $("upload").title = "cần SASTT_ENGINE=real";
+
   const list = (await (await fetch("/v1/demo/scenarios")).json()).scenarios;
   $("scenario").innerHTML = list.map(s =>
-    `<option value="${s.name}">${s.title} — ${s.speakers.length} người, ${(s.duration_ms/1000).toFixed(0)}s, ${s.overlap_regions} vùng chồng lấn</option>`
+    `<option value="${s.name}">${s.title} — ${s.speakers.length} người, ${(s.duration_ms / 1000).toFixed(0)}s</option>`
   ).join("");
+
+  // The built-in scenarios are synthetic tones built for the fake adapters. On
+  // the real engine they contain no speech, so the pipeline correctly returns an
+  // empty transcript - which looks like a failure unless it is said out loud.
+  if (!fake) $("scenario-hint").hidden = false;
 }
 
-function setMeta(pairs) {
-  $("meta").innerHTML = Object.entries(pairs)
-    .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
-}
-function setModels(versions) {
-  $("models").innerHTML = Object.entries(versions || {})
-    .map(([k, v]) => `<dt>${k}</dt><dd>${v ?? "<span class='pill null'>null</span>"}</dd>`).join("");
-}
-
-function renderTimeline(segments) {
+function renderTimeline(segments, emptyNote) {
   const box = $("timeline");
-  if (!segments.length) { box.innerHTML = `<p class="empty">chưa có segment</p>`; return; }
-  const total = Math.max(...segments.map(s => s.end_ms));
-  const lanes = [...new Map(segments.map(s => [s.session_speaker_id, s])).keys()];
-  let html = `<div class="ruler">` + Array.from({length: 6}, (_, i) => {
-    const ms = Math.round(total * i / 5);
-    return `<span style="left:${(i/5*100).toFixed(2)}%">${fmt(ms)}</span>`;
-  }).join("") + `</div>`;
+  if (!segments.length) {
+    box.innerHTML = `<p class="empty${emptyNote ? " warn" : ""}">${emptyNote || "chưa có segment"}</p>`;
+    return;
+  }
+
+  const total = Math.max(...segments.map(s => s.end_ms)) || 1;
+  const lanes = [...new Set(segments.map(s => s.session_speaker_id))];
+  const overlaps = segments.filter(s => s.is_overlap);
+
+  let html = `<div class="ruler">` + Array.from({ length: 6 }, (_, i) =>
+    `<span style="left:${(i / 5 * 100).toFixed(2)}%">${fmt(Math.round(total * i / 5))}</span>`
+  ).join("") + `</div>`;
+
   for (const lane of lanes) {
     const mine = segments.filter(s => s.session_speaker_id === lane);
-    const label = mine[0].speaker_label || lane;
-    html += `<div class="lane"><div class="lane-label" title="${lane}">${label}</div><div class="track">`;
+    const name = mine[0].speaker_label || lane.slice(-6);
+    html += `<div class="lane"><div class="lane-name" title="${lane}"
+                  style="color:${colorFor(mine[0])}">${name}</div><div class="track">`;
+
+    // Shade the concurrent stretches across every lane, so "two people at once"
+    // is visible rather than something you have to infer from the timestamps.
+    for (const o of overlaps) {
+      const left = (o.start_ms / total * 100).toFixed(3);
+      const width = Math.max(0.4, (o.end_ms - o.start_ms) / total * 100).toFixed(3);
+      html += `<div class="band" style="left:${left}%;width:${width}%"></div>`;
+    }
     for (const s of mine) {
       const left = (s.start_ms / total * 100).toFixed(3);
-      const width = Math.max(0.6, (s.end_ms - s.start_ms) / total * 100).toFixed(3);
-      const cls = s.is_final ? "seg" : "seg prov";
-      html += `<div class="${cls}" style="left:${left}%;width:${width}%;background:${colorFor(lane)}"
-                title="${fmt(s.start_ms)}–${fmt(s.end_ms)} ${s.text}">${s.is_overlap ? "⧉ " : ""}${s.text}</div>`;
+      const width = Math.max(0.8, (s.end_ms - s.start_ms) / total * 100).toFixed(3);
+      const provisional = s.is_final === false ? " provisional" : "";
+      html += `<div class="seg${provisional}" style="left:${left}%;width:${width}%;background:${colorFor(s)}"
+                    title="${fmt(s.start_ms)}–${fmt(s.end_ms)} · ${s.text || ""}">${s.text || ""}</div>`;
     }
     html += `</div></div>`;
   }
   box.innerHTML = html;
 }
 
-function renderSegments(segments) {
-  const body = $("segments");
-  if (!segments.length) { body.innerHTML = `<tr><td colspan="4" class="empty">chưa có dữ liệu</td></tr>`; return; }
-  body.innerHTML = segments.map(s => {
+function renderRows(segments, emptyNote) {
+  const body = $("rows");
+  if (!segments.length) {
+    body.innerHTML = `<tr><td colspan="4" class="empty${emptyNote ? " warn" : ""}">${emptyNote || "chưa có dữ liệu"}</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = [...segments].sort((a, b) => a.start_ms - b.start_ms).map(s => {
     const pills = [
+      s.is_overlap ? `<span class="pill ov">đồng thời${s.source_track !== null && s.source_track !== undefined ? " · nguồn " + s.source_track : ""}</span>` : "",
       `<span class="pill">${s.identity_status}</span>`,
-      s.is_overlap ? `<span class="pill ov">overlap${s.source_track !== null ? " · track " + s.source_track : ""}</span>` : "",
       s.degraded_mode ? `<span class="pill ov">degraded</span>` : "",
-      `<span class="pill null">conf: ${s.confidence_status}</span>`,
+      `<span class="pill null">${s.confidence_status}</span>`,
       ...(s.quality_flags || []).map(f => `<span class="pill ov">${f}</span>`),
     ].join("");
-    return `<tr>
-      <td class="num">${fmt(s.start_ms)}<br>${fmt(s.end_ms)}</td>
-      <td><span style="color:${colorFor(s.session_speaker_id)};font-weight:600">${s.speaker_label || s.session_speaker_id}</span>
-          <div class="num" style="font-size:11px">${s.speaker_id}</div></td>
-      <td>${s.text}</td>
+    return `<tr class="${s.is_overlap ? "overlap" : ""}">
+      <td class="time">${fmt(s.start_ms)}<br>${fmt(s.end_ms)}</td>
+      <td><span class="who" style="color:${colorFor(s)}">${s.speaker_label || "—"}</span>
+          ${s.speaker_name ? `<div class="sub">${s.speaker_name}</div>` : ""}</td>
+      <td>${s.text || ""}</td>
       <td>${pills}</td>
     </tr>`;
   }).join("");
 }
 
-function logEvent(event) {
-  const cls = { "transcript.final": "final", "transcript.revision": "rev",
-                "pipeline.warning": "warn", "transcript.provisional": "prov" }[event.type] || "";
-  const p = event.payload || {};
-  let detail = "";
-  if (p.text !== undefined) detail = `${fmt(p.start_ms)} ${p.speaker_label} · "${p.text}"`;
-  else if (p.previous_label) detail = `${p.previous_label} → ${p.speaker_label} (${p.reason})`;
-  else detail = JSON.stringify(p).slice(0, 110);
-  const sup = event.supersedes_event_id ? ` ⟵ thay thế ${event.supersedes_event_id.slice(-6)}` : "";
-  const row = document.createElement("div");
-  row.className = cls;
-  row.textContent = `#${event.sequence_number} ${event.type} rev=${event.revision} ${detail}${sup}`;
-  $("events").appendChild(row);
-  $("events").scrollTop = $("events").scrollHeight;
+function renderVersions(versions) {
+  const parts = Object.entries(versions || {})
+    .map(([k, v]) => `${k}=${v ?? "null"}`).join(" · ");
+  $("versions").textContent = parts ? `model versions — ${parts}` : "";
 }
 
 async function fileToBase64(file) {
-  const buffer = new Uint8Array(await file.arrayBuffer());
+  const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";
-  for (let i = 0; i < buffer.length; i += 0x8000)
-    binary += String.fromCharCode.apply(null, buffer.subarray(i, i + 0x8000));
+  for (let i = 0; i < bytes.length; i += 0x8000)
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return btoa(binary);
 }
 
+function busy(on) { $("run").disabled = on; $("stream").disabled = on; }
+
 async function runOffline() {
-  const upload = $("upload").files[0];
+  const file = $("upload").files[0];
   const scenario = $("scenario").value;
-  const source = upload ? upload.name : scenario;
-  speakerColor = new Map();
-  $("events-card").hidden = true;
-  setMeta({ "chế độ": "offline job", "nguồn": source, "trạng thái": "đang chạy…" });
+  const source = file ? file.name : scenario;
+  colors = new Map();
+  busy(true);
+  setStatus({ "nguồn": source, "trạng thái": "đang chạy…" });
 
-  const body = upload ? { audio_base64: await fileToBase64(upload) } : { scenario };
-  const response = await fetch("/v1/jobs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Idempotency-Key": `demo-${source}-${Date.now()}` },
-    body: JSON.stringify(body),
-  });
-  const created = await response.json();
-  if (!response.ok) throw new Error(created.message || created.detail || "job failed");
+  try {
+    const body = file ? { audio_base64: await fileToBase64(file) } : { scenario };
+    const response = await fetch("/v1/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": `console-${Date.now()}` },
+      body: JSON.stringify(body),
+    });
+    const created = await response.json();
+    if (!response.ok) throw new Error(created.message || created.detail || "job thất bại");
 
-  const result = await (await fetch(`/v1/jobs/${created.job_id}/result`)).json();
-  setMeta({
-    "chế độ": "offline job", "nguồn": source, "job": created.job_id.slice(0, 18) + "…",
-    "trạng thái": result.state, "người trong phiên": result.estimated_session_speakers,
-    "segment": result.segments.length,
-    "cảnh báo": result.warnings.length ? result.warnings.join(", ") : "—",
-    "degraded": result.degraded_mode ? "có" : "không",
-  });
-  setModels(result.model_versions);
-  renderTimeline(result.segments);
-  renderSegments(result.segments);
+    const result = await (await fetch(`/v1/jobs/${created.job_id}/result`)).json();
+    setStatus({
+      "nguồn": source,
+      "trạng thái": result.state,
+      "người trong phiên": result.estimated_session_speakers,
+      "segment": result.segments.length,
+      "đồng thời": result.segments.filter(s => s.is_overlap).length,
+      "cảnh báo": result.warnings.length ? result.warnings.join(", ") : "—",
+    });
+    renderVersions(result.model_versions);
+    // An empty transcript is a real answer, not a blank screen: say why.
+    const note = result.segments.length ? null
+      : (file ? "Không phát hiện tiếng nói nào trong file này."
+              : "Kịch bản dựng sẵn là tone tổng hợp, engine thật không tìm thấy tiếng nói. Hãy tải audio thật lên.");
+    renderTimeline(result.segments, note);
+    renderRows(result.segments, note);
+  } catch (error) {
+    setStatus({ "nguồn": source, "trạng thái": `<span class="err">${error.message}</span>` });
+  } finally {
+    busy(false);
+  }
 }
 
 async function runStream() {
   const scenario = $("scenario").value;
-  speakerColor = new Map();
-  $("events").innerHTML = ""; $("events-card").hidden = false;
-  $("run-stream").disabled = true; $("run-offline").disabled = true;
-  setMeta({ "chế độ": "near-realtime", "kịch bản": scenario, "trạng thái": "đang mở session…" });
+  colors = new Map();
+  busy(true);
+  setStatus({ "chế độ": "near-realtime", "nguồn": scenario, "trạng thái": "đang mở session…" });
 
-  const session = await (await fetch("/v1/sessions", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scenario }),
-  })).json();
-  currentSession = session.session_id;
-  lastSeq = 0;
+  try {
+    const session = await (await fetch("/v1/sessions", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scenario }),
+    })).json();
 
-  const wav = await (await fetch(`/v1/demo/scenarios/${scenario}/audio.wav`)).arrayBuffer();
-  const pcm = new Uint8Array(wav.slice(44));            // 16-bit mono 16 kHz
-  const frameBytes = session.frame_ms * session.sample_rate / 1000 * 2;
-  const speed = Number($("speed").value);
+    const wav = await (await fetch(`/v1/demo/scenarios/${scenario}/audio.wav`)).arrayBuffer();
+    const pcm = new Uint8Array(wav.slice(44));       // 16-bit mono 16 kHz
+    const frameBytes = session.frame_ms * session.sample_rate / 1000 * 2;
 
-  const segments = new Map();
-  const socket = new WebSocket(`ws://${location.host}${session.websocket_url}`);
-  socket.binaryType = "arraybuffer";
+    const live = new Map();
+    const counts = { provisional: 0, revision: 0, final: 0 };
+    const socket = new WebSocket(`ws://${location.host}${session.websocket_url}`);
 
-  socket.onmessage = (message) => {
-    const event = JSON.parse(message.data);
-    lastSeq = Math.max(lastSeq, event.sequence_number || 0);
-    logEvent(event);
-    const p = event.payload || {};
-    if (event.type === "transcript.provisional" || event.type === "transcript.final") {
-      if (event.supersedes_event_id) segments.delete(event.supersedes_event_id);
-      segments.set(p.event_id, p);
-      renderTimeline([...segments.values()]);
-      renderSegments([...segments.values()]);
-    }
-    if (event.type === "session.finalized") {
-      setMeta({ "chế độ": "near-realtime", "session": currentSession.slice(0, 18) + "…",
-                "trạng thái": "đã finalize", "event": lastSeq, "segment": segments.size });
-      $("run-stream").disabled = false; $("run-offline").disabled = false;
-      $("test-resume").disabled = false;
-    }
-  };
+    socket.onmessage = (message) => {
+      const event = JSON.parse(message.data);
+      const payload = event.payload || {};
+      if (event.type.startsWith("transcript.")) {
+        counts[event.type.split(".")[1]] = (counts[event.type.split(".")[1]] || 0) + 1;
+        // A delivered event is superseded, never rewritten (spec 6, FR-011).
+        if (event.supersedes_event_id) live.delete(event.supersedes_event_id);
+        live.set(payload.event_id, payload);
+        renderTimeline([...live.values()]);
+        renderRows([...live.values()]);
+      }
+      setStatus({
+        "chế độ": "near-realtime", "nguồn": scenario,
+        "trạng thái": event.type === "session.finalized" ? "đã finalize" : "đang stream…",
+        "provisional": counts.provisional || 0,
+        "revision": counts.revision || 0,
+        "final": counts.final || 0,
+      });
+      if (event.type === "session.finalized") { busy(false); socket.close(); }
+    };
+    socket.onerror = () => { setStatus({ "trạng thái": `<span class="err">lỗi WebSocket</span>` }); busy(false); };
 
-  socket.onopen = async () => {
-    setMeta({ "chế độ": "near-realtime", "session": currentSession.slice(0, 18) + "…",
-              "trạng thái": "đang stream…" });
-    for (let offset = 0; offset < pcm.length; offset += frameBytes) {
-      socket.send(pcm.slice(offset, offset + frameBytes));
-      if (speed > 0) await new Promise(r => setTimeout(r, session.frame_ms / speed));
-    }
-    socket.send(JSON.stringify({ type: "finalize" }));
-  };
+    socket.onopen = async () => {
+      for (let offset = 0; offset < pcm.length; offset += frameBytes) {
+        socket.send(pcm.slice(offset, offset + frameBytes));
+        await new Promise(r => setTimeout(r, session.frame_ms / 4));   // 4× tốc độ thật
+      }
+      socket.send(JSON.stringify({ type: "finalize" }));
+    };
+  } catch (error) {
+    setStatus({ "trạng thái": `<span class="err">${error.message}</span>` });
+    busy(false);
+  }
 }
 
-async function testResume() {
-  if (!currentSession) return;
-  const from = Math.max(0, lastSeq - 4);
-  const row = document.createElement("div");
-  row.className = "rev";
-  row.textContent = `--- reconnect: resume từ sequence ${from} ---`;
-  $("events").appendChild(row);
-
-  const socket = new WebSocket(`ws://${location.host}/v1/sessions/${currentSession}/audio`);
-  socket.onopen = () => socket.send(JSON.stringify({ type: "resume", last_sequence_number: from }));
-  let replayed = 0, finals = 0;
-  socket.onmessage = (m) => {
-    const event = JSON.parse(m.data);
-    replayed++; if (event.is_final) finals++;
-    logEvent(event);
-  };
-  setTimeout(() => {
-    const done = document.createElement("div");
-    done.className = "final";
-    done.textContent = `--- replay xong: ${replayed} event (${finals} final), không có final trùng ---`;
-    $("events").appendChild(done);
-    socket.close();
-  }, 700);
-}
-
-$("run-offline").onclick = () => runOffline().catch(e => alert(e));
-$("run-stream").onclick = () => runStream().catch(e => alert(e));
-$("test-resume").onclick = () => testResume().catch(e => alert(e));
+$("run").onclick = runOffline;
+$("stream").onclick = runStream;
 boot();
 </script>
 </body>
