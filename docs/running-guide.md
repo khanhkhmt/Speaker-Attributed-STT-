@@ -148,8 +148,9 @@ pytest -m model -q
 Model smoke pass không phải benchmark accuracy; benchmark corpus, calibration và
 load evidence là các gate riêng.
 
-Lần kiểm tra mã gần nhất (14/08/2026): `ruff check`, format, `mypy` và `pytest -q`
-đều pass (**230 passed, 57 deselected**).
+Lần kiểm tra mã gần nhất (18/08/2026): `ruff check`, format, `mypy` và `pytest -q`
+đều pass (**278 passed, 59 deselected**); `pytest -m model` **34 passed** trên
+weight thật, `pytest -m db` **21 passed** trên PostgreSQL + Redis thật.
 
 ## 5. Chạy nhanh giao diện development (fake engine)
 
@@ -450,6 +451,8 @@ khi kiểm tra UI mới.
 | Job mãi `QUEUED` | Không có worker consume `speaker.batch`, Redis URL khác hoặc queue worker sai | Khởi động `speaker-worker`/worker local với cùng `REDIS_URL`; xem log/metrics |
 | State giữa pipeline rất lâu | File dài, GPU bận/thiếu VRAM hoặc model đang xử lý | Theo dõi worker log + `nvidia-smi`; không retry đồng thời job cũ chưa terminal |
 | `FUSING` | Đang ghép kết quả cuối, hoặc worker chạy code cũ | Worker hiện tại cập nhật stage tại thời điểm chạy; nếu giữ bất thường, xem log/version rồi restart graceful |
+| `unsupported_concurrency` | Ba người trở lên nói cùng lúc; separator hai nguồn không xử lý được | Vùng đó trả transcript mixture, không phân theo người. Đúng hành vi, không phải lỗi cấu hình — xem giới hạn ở §13 |
+| `session_language_uncertain` | Nhận dạng ngôn ngữ không đạt `min_probability` nên không chốt cho cả phiên | Kiểm tra audio có đủ speech sạch không; hoặc pin `asr.language` thủ công cho job đó |
 | `unreliable_*_transcript` / `DEGRADED_SUCCEEDED` | ASR sinh số từ không khả dĩ cho VAD/timestamp (thường ở overlap hoặc khoảng lặng) | Giữ audio nguồn để nghe lại; không coi câu bị chặn là lời nói thật. Kiểm tra model/VAD trước khi điều chỉnh ngưỡng, rồi retry bằng key mới nếu cần. |
 | UI “Lỗi” nhưng API job chưa terminal | Browser chạy JS cũ hoặc lỗi mạng phía client | Hard refresh; `/v1/jobs/<job_id>` là nguồn state chuẩn |
 | `409` idempotency key | Key đã dùng cho audio khác | Tạo key mới; không tái sử dụng key cũ với payload khác |
@@ -513,6 +516,14 @@ Thiếu đo đạc thì capacity report phải ở `pending`; không thay nó b�
 - `source_linking.short_source_policy: diarization_constrained` **chưa được
   nghiệm thu trên dữ liệu có nhãn**. Bật nó là đánh đổi `Unknown` trung thực lấy
   rủi ro gán sai tên một cách tự tin. Giữ `unknown` cho đến khi có bộ đánh giá.
+- **Ba người nói cùng lúc chưa tách được.** Bộ đếm nay báo đúng K=3 và router trả
+  `MIXTURE_ASR_UNSUPPORTED` kèm cảnh báo `unsupported_concurrency` — vùng đó có
+  transcript mixture nhưng không phân theo người. MossFormer2 chỉ tách 2 nguồn và
+  weight 3 nguồn chưa được stage. Hướng xử lý đang chờ quyết định:
+  [`implementation-status.md` mục 6](implementation-status.md).
+- **Đoạn overlap ngắn vẫn ra `Unknown`.** Dưới 500 ms embedding người nói không
+  còn mang thông tin định danh (đo tại `implementation-status.md` mục 5), nên đây
+  là giới hạn thông tin chứ không phải cấu hình sai.
 
 ## 13.1 Ngôn ngữ ASR (`asr.language_detection`)
 

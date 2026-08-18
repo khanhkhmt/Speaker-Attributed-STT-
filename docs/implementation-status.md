@@ -2,9 +2,9 @@
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Cập nhật | 14/08/2026 |
+| Cập nhật | 18/08/2026 |
 | Spec tham chiếu | [`production-technical-spec.md`](production-technical-spec.md) v1.0 |
-| Milestone hiện tại | M0 xong · M1 **xong** · **M2 ~85%** · **M3 ~60%** · **M4 ~35%** · **M5 ~30%** — phần còn lại là gate cần model/GPU/corpus thật |
+| Milestone hiện tại | M0 xong · M1 **xong** · **M2 ~85%** · **M3 ~60%** · **M4 ~45%** · **M5 ~30%** — phần còn lại là gate cần model/GPU/corpus thật |
 | Engine mặc định | `fake` (M0). Đặt `SASTT_ENGINE=real` để dùng adapter model thật |
 
 Tài liệu này ghi **tình trạng thực tế** của repo. Mọi con số đều lấy từ lần chạy
@@ -18,7 +18,7 @@ thật, không ước lượng.
 | M1 — Offline 2-speaker path | decode/resample, adapter pyannote + faster-whisper + MossFormer2 + CAM++, pin manifest, smoke test | **xong về luồng chức năng** — DoD, worker queue và chốt transcript thực đã kiểm chứng; benchmark/soak/accuracy evidence vẫn là nợ production |
 | M2 — Linking & Voice ID | pgvector registry, enrollment quality, deletion/audit | **~85%** — API local tạo/enroll/xem/xóa đã chạy; persistent pgvector cần được chọn khi deploy |
 | M3 — Near-realtime | queue/worker, backpressure, latency instrumentation | **~60%** — có WebSocket/revision/replay, bounded RAM ring + disk spool final pass, backpressure phía client và Prometheus stage/RTF/GPU-optional metrics. Tuy nhiên chưa chứng minh được stream hết audio và gán speaker ổn định trên audio thật; không đạt beta/production. Chưa có OTel, autoscale hay SLO đo trên baseline. |
-| M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~35%** — router + feature gate + adapter SepFormer 3mix 8 kHz đã có; chưa pre-stage/benchmark checkpoint, chưa có counter production/GSS/WeSep |
+| M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~45%** — router + feature gate + adapter SepFormer 3mix 8 kHz đã có, và bộ đếm người đồng thời nay chạy bằng bằng chứng diarization nên các dòng K≥3 của router lần đầu tới được. Chưa pre-stage/benchmark checkpoint 3 nguồn, chưa có GSS/WeSep. **Đang chờ quyết định hướng đi — xem mục 6.** |
 | M5 — Production hardening | benchmark corpus, calibrator, load/soak, SBOM, capacity | **~30%** — calibrator release JSON, CLI benchmark/capacity/SBOM và guardrail test đã có; corpus, calibration release ký duyệt, soak/load và capacity evidence chưa có |
 
 ## 2. Gate chất lượng — lần chạy gần nhất
@@ -27,9 +27,9 @@ thật, không ước lượng.
 |---|---|---|
 | Lint | `ruff check src tests deploy` | pass |
 | Format | `ruff format --check src tests deploy` | pass |
-| Type | `mypy` (strict) | pass, 55 source file |
-| Test thường | `pytest` | **230 passed**, 57 deselected (lần kiểm tra 14/08/2026; không gộp model/load/db) |
-| Test model | `pytest -m model` | **32 passed, 0 skipped** |
+| Type | `mypy` (strict) | pass, 61 source file |
+| Test thường | `pytest` | **278 passed**, 59 deselected (lần kiểm tra 18/08/2026; không gộp model/load/db) |
+| Test model | `pytest -m model` | **34 passed, 0 skipped** |
 | Test hạ tầng | `pytest -m db` | **21 passed** (Postgres + Redis thật) |
 | Coverage | `--cov=sastt.domain --cov=sastt.application` | 88% (spec 16.3 yêu cầu ≥85%) |
 
@@ -253,7 +253,52 @@ Chạy lần đầu tiên — trước đó pin 2.9 GiB nhưng chưa thực thi 
 Chậm hơn ~17% mà text không khác trên mẫu này; timestamp lệch 420 ms. Chưa trả
 lời được spec 21.6 (turbo hay large-v3 cho tiếng Việt) — cần benchmark.
 
-## 6. Fullstack — hạ tầng đã chạy thật (spec 10, 11.1, 11.3)
+## 6. Công việc đang dở — cần chọn một hướng
+
+**Trạng thái:** chờ quyết định. Không có việc nào khác đang bị chặn bởi mục này,
+nhưng mọi cải thiện tiếp theo cho vùng overlap đều nằm sau nó.
+
+### 6.1 Vấn đề còn lại
+
+Sau các thay đổi ngày 18/08, vùng overlap vẫn còn hai giới hạn mà không cấu hình
+nào gỡ được:
+
+1. **Đoạn ngắn không định danh được.** Trên file 15 phút, 34/41 segment overlap
+   vẫn `Unknown`; trên file 3 người 20 phút là 43/50. Nguyên nhân đã đo: dưới
+   500 ms embedding người nói là nhiễu (mục 5). Đây là giới hạn thông tin, không
+   phải giới hạn của CAM++.
+2. **Ba người nói cùng lúc không tách được.** Bộ đếm nay báo đúng K=3 và router
+   trả `MIXTURE_ASR_UNSUPPORTED` — trung thực, nhưng vẫn là không có transcript
+   phân theo người cho vùng đó. MossFormer2 chỉ tách 2 nguồn.
+
+### 6.2 Hai hướng, chọn một
+
+| | **A · Stage SepFormer 3mix** | **B · Chuyển sang TS-ASR (DiCoW)** |
+|---|---|---|
+| Bản chất | Bổ sung separator 3 nguồn cho đường hiện tại | Bỏ hẳn khâu tách nguồn và gán nguồn |
+| Giải quyết | Giới hạn 2 (ba người đồng thời) | Cả giới hạn 1 và 2 |
+| Việc phải làm | `prestage_models.py` cho `sepformer_libri3mix`, rà licence (`beta_only`, `revision: null`), bật `three_source_beta`, nâng `max_supported_concurrent_speakers: 3`, benchmark | Manifest + adapter mới, rà licence, wiring port ASR, một lượt decode mỗi người |
+| Rủi ro | SepFormer libri3mix là 8 kHz, phải resample; chất lượng trên tiếng Việt chưa biết | Thay đổi kiến trúc lớn nhất; chất lượng phụ thuộc mạnh vào diarization |
+| Chi phí T4 | Thêm một model thường trú; VRAM hiện chỉ còn ~1–2 GB mỗi GPU | Backbone whisper-large-v3-turbo, fp16; N lượt decode cho N người |
+| Giữ được gì | Toàn bộ pipeline hiện tại | Diarization giữ nguyên; separation + linking thành code chết |
+
+### 6.3 Điều kiện chung cho cả hai
+
+Cả A lẫn B đều **không nghiệm thu được nếu không có bộ dữ liệu có nhãn**. Đo đạc
+ngày 18/08 cho thấy hai cơ chế gán nguồn độc lập chỉ đồng thuận 3/6 trên bài toán
+nhị phân — đúng mức ngẫu nhiên — nên hiện không có cách nào so sánh A với B, hay
+so sánh bất kỳ phương án nào với hiện trạng, ngoài việc đếm số segment có tên.
+Đếm số lượng không phải đo độ chính xác.
+
+Vì lý do đó `source_linking.short_source_policy` vẫn mặc định `unknown`: bật
+`diarization_constrained` làm `Unknown` giảm 34 → 16 trên file mẫu, nhưng không
+có gì chứng minh 19 cái tên mới là đúng.
+
+**Việc cần làm trước tiên, bất kể chọn A hay B:** 20–30 phút audio cùng miền, gán
+nhãn ai nói câu nào trong vùng overlap. Xem mục 10 để biết vị trí của nó trong
+danh sách nợ.
+
+## 7. Fullstack — hạ tầng đã chạy thật (spec 10, 11.1, 11.3)
 
 | Thành phần | Trạng thái |
 |---|---|
@@ -292,7 +337,7 @@ Docker daemon, nên không được coi đây là bằng chứng fullstack GPU/M
 
 **Vẫn chưa xong:** auth/TLS production, OTel tracing, load/soak và benchmark.
 
-## 7. Scenario acceptance (spec 16.2)
+## 8. Scenario acceptance (spec 16.2)
 
 Chạy trên fake adapters, không tải weights:
 
@@ -309,7 +354,7 @@ Chạy trên fake adapters, không tải weights:
 | S08 | 3-source/beta | route/feature-gate + fake 3-source wiring đã có; acceptance model thật chờ pre-stage SepFormer |
 | S09–S10, S14 | đa kênh/GSS, WeSep/model revision | chưa triển khai adapter production; giữ feature gate fail-closed |
 
-## 8. Lệch spec — đã rào, không giấu
+## 9. Lệch spec — đã rào, không giấu
 
 | Chỗ lệch | Lý do | Rào chắn |
 |---|---|---|
@@ -319,8 +364,15 @@ Chạy trên fake adapters, không tải weights:
 | `ports/audio.py`, `ports/fusion.py` ngoài cây spec 17 | spec 9 bắt buộc 3 port này | ghi chú trong `ports/__init__.py` |
 | Một môi trường Python cho mọi model | tiện phát triển | spec 11.1 yêu cầu tách image; cài `clearvoice` đã hạ numpy 2.5→1.26 |
 
-## 9. Nợ kỹ thuật đã biết
+## 10. Nợ kỹ thuật đã biết
 
+- **Chưa có bộ dữ liệu có nhãn cho vùng overlap** — nợ chặn nhiều thứ nhất hiện
+  nay. Không có nó thì không nghiệm thu được hướng A hay B ở mục 6, không đặt
+  được ngưỡng linking từ số đo, và không bật được
+  `source_linking.short_source_policy: diarization_constrained`. Quy mô tối thiểu:
+  20–30 phút audio cùng miền, gán nhãn ai nói câu nào trong vùng overlap. Khác với
+  benchmark corpus 10–20 giờ của spec 16.4: bộ này để **hiệu chỉnh**, không để
+  công bố số.
 - **Chưa tách image theo worker** (spec 11.1). Xung đột numpy khi cài chung
   pyannote + clearvoice là bằng chứng cho việc phải tách ở production.
 - **Chưa có calibration release được duyệt.** Code đã có `FileConfidenceCalibrator` đọc release JSON versioned, nhưng config mặc định vẫn không trỏ release; do đó mọi output mặc định vẫn `null` + `confidence_status="uncalibrated"` và Voice ID fail closed.
@@ -346,7 +398,7 @@ Chạy trên fake adapters, không tải weights:
   đủ audio, rồi mới đánh giá separator/diarizer/linker bằng DER, overlap recall,
   speaker-confusion và tỷ lệ `Unknown`.
 
-## 10. Nợ còn lại sau khi đóng M1
+## 11. Nợ còn lại sau khi đóng M1
 
 | Việc | Vì sao chưa xong |
 |---|---|
@@ -358,7 +410,7 @@ Chạy trên fake adapters, không tải weights:
 | **SBOM chưa vào CI/release** | `deploy/generate_sbom.py` tạo inventory dependency + model manifest local; cần artifact ký/scan trong pipeline release |
 | **Registry persistent chưa nối vào app** | API Voice Registry chạy local bằng registry in-memory để không phụ thuộc Docker; deploy cần inject `PgVectorVoiceRegistry` + auth context thay vì state local |
 
-## 10.1 Artefact M3–M5 mới
+## 11.1 Artefact M3–M5 mới
 
 - `StreamingSession` chỉ giữ ring buffer trong RAM; PCM đầy đủ được spool tạm để final pass, nên kiểm thử có thể chứng minh bộ đệm RAM bị chặn.
 - ASR mặc định Whisper auto-detect; console/API có language hint per-job (`auto`, `vi`, `en`) và đưa hint vào `config_version`, tránh ép file tiếng Anh sang tiếng Việt.
@@ -374,7 +426,7 @@ python3 deploy/benchmark_report.py evidence.jsonl --release-id bench_2026_08 --o
 python3 deploy/capacity_report.py load-measurements.json --output artifacts/capacity.json
 ```
 
-## 11. Chạy thử
+## 12. Chạy thử
 
 Cần: Python 3.10+, ffmpeg, NVIDIA GPU + CUDA 12. Đo trên 2× Tesla T4.
 

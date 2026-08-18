@@ -17,15 +17,25 @@ Hướng dẫn cài đặt, stage model, chạy API/worker, xử lý queue và s
 | **M1 — Offline 2-speaker path** | ffmpeg decode, pyannote / faster-whisper / MossFormer2 / CAM++ adapters, pinned manifests, smoke tests | **done (functional)** — real offline path and plausibility guard verified; production evidence remains pending |
 | M2 — Linking and Voice ID | registry, enrollment quality, deletion/audit | **~85%** — local Voice Registry API runs; persistent deploy wiring remains |
 | M3 — Near-realtime | queues, backpressure, latency instrumentation | **~60%** — bounded realtime ring + spool, revisions/replay, Prometheus metrics; no measured SLO/autoscale yet |
-| M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~35%** — gated local SepFormer adapter; real checkpoint/counter/GSS/WeSep pending |
+| M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~45%** — gated local SepFormer adapter, and the concurrent counter now runs on diarization evidence so the router's K≥3 rows are reachable; 3-source checkpoint, GSS and WeSep pending. **Direction not yet chosen — see [status §6](docs/implementation-status.md).** |
 | M5 — Production hardening | benchmark corpus, calibrators, load/soak, SBOM, capacity | **~30%** — local calibration/report/SBOM tooling; corpus and real evidence pending |
 
 M0 acceptance (spec 18): scenarios **S01**, **S04** and **S12** pass structurally on fake
 adapters; S02, S03, S11 and S13 are covered too. The latest non-model quality run
-completed with **230 passed, 57 deselected**. A real-engine rerun on a 20-minute
-upload also verified the transcript plausibility guard: text whose VAD duration or
-word-timestamp span is physically impossible is withheld and the job is marked
-degraded with an explicit warning. This is a safety guard, not an accuracy claim.
+completed with **278 passed, 59 deselected**, alongside **34 model tests** on pinned
+weights and **21 infrastructure tests** against a real PostgreSQL and Redis. A
+real-engine rerun on a 20-minute upload also verified the transcript plausibility
+guard: text whose VAD duration or word-timestamp span is physically impossible is
+withheld and the job is marked degraded with an explicit warning. This is a safety
+guard, not an accuracy claim.
+
+**Work in progress.** Overlap regions still return `Unknown` for most short
+sources, and three concurrent speakers cannot be separated at all — the counter now
+reports K=3 honestly and the router degrades the region rather than inventing two
+sources from three voices. Closing that needs a choice between staging a 3-source
+separator and moving to diarization-conditioned ASR, and either way it needs
+labelled overlap audio first. Both options, with their costs, are set out in
+[status §6](docs/implementation-status.md).
 
 ## What is deliberately absent
 
@@ -37,7 +47,11 @@ degraded with an explicit warning. This is a safety guard, not an accuracy claim
 * **Language handling.** Offline uploads default to Whisper auto-detection, resolved **once per session** from pooled speech and then reused by every ASR call. Identifying per crop asks Whisper to decide from a few hundred milliseconds of a separated overlap source, which is where it emits memorised subtitle credits instead of a transcription (measured: 18% correct at 0.3 s against 100% at 30 s). The console can pin `vi` or `en` per job; the selected hint is part of that job's config version, so an English upload is never implicitly forced through the Vietnamese decoder path.
 * **No calibrated thresholds.** `source_linking` and `voice_id` thresholds ship as `null`
   and the pipeline fails closed: sources become `Unknown`/temporary rather than guessed
-  (spec 5.10, 18 rule 7). Tests that exercise linking supply thresholds explicitly.
+  (spec 5.10, 18 rule 7). Tests that exercise linking supply thresholds explicitly, and
+  the development API and worker load `configs/linking-thresholds.demo.yaml` so linking is
+  observable at all — that file declares itself `status: unapproved` because its two
+  numbers were never measured. Point `SASTT_LINKING_THRESHOLDS` at an approved calibration
+  release to replace it; configure nothing and the null thresholds stand.
 * **No research checkpoint in production.** `mono_four_five_source_research` is refused at
   startup in a production environment, and Multi-Decoder DPRNN is `deny` in its manifest
   (spec 0.2, 20).
@@ -86,7 +100,7 @@ pip install -e ".[dev]"
 
 pytest                 # unit + contract + integration, no weights, no Hub token
 pytest -m model        # skips with a reason unless weights are staged in /models
-ruff check src tests && ruff format --check src tests
+ruff check src tests deploy && ruff format --check src tests deploy
 mypy
 ```
 
@@ -108,7 +122,8 @@ checkpoint, or an uncalibrated Voice ID that is not failing closed (spec 12, 20)
    (spec 0.3, 5.1.7).
 3. A separator returns waveforms, never identities. `source_0` in one chunk and `source_0`
    in the next may be different people; identity comes from Hungarian assignment over
-   speaker embeddings (spec 5.4, 5.8).
+   speaker embeddings, narrowed to the speakers diarization reports as active over the
+   region (spec 5.2, 5.4, 5.8).
 4. There is no exhaustive permutation path — assignment is cubic, not factorial
    (spec 5.8, 16.3).
 5. `session_speaker_id` is stable and never reused; display labels may be revised, and a
