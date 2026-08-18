@@ -32,7 +32,7 @@ from sastt.application.offline_pipeline import (
     PipelineAdapters,
     _merge_overlap_regions,
 )
-from sastt.application.overlap_router import CountingEvidence, estimate_source_count, route_overlap
+from sastt.application.overlap_router import estimate_source_count, route_overlap
 from sastt.application.session_state import SessionSpeakerState
 from sastt.config import SasttConfig
 from sastt.domain.audio import (
@@ -340,8 +340,11 @@ class StreamingSession:
                     continue
                 if not force_close and self.now_ms - clipped.end_ms < self.silence_ms:
                     continue  # region not closed yet
-                count = estimate_source_count(CountingEvidence(), self.config)
-                decision = route_overlap(region, count, self.config, osd_positive=True)
+                evidence = self.pipeline.counting_evidence(diarization, region.interval)
+                count = estimate_source_count(evidence, self.config)
+                decision = route_overlap(
+                    region, count, self.config, evidence=evidence, osd_positive=True
+                )
                 region_groups, _, _ = self.pipeline.handle_overlap_region(
                     buffer, region, decision, self.speakers, ctx, diarization=diarization
                 )

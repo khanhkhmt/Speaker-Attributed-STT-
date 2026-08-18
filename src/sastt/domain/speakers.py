@@ -217,6 +217,7 @@ class DiarizationResult:
 CountMethod = Literal[
     "fixed_two",
     "ts_vad",
+    "diarization_activity",
     "multichannel_activity",
     "multidecoder_research",
     "unknown",
@@ -227,8 +228,10 @@ CountMethod = Literal[
 class SourceCountEstimate:
     """Concurrent source count estimate — spec 5.3.
 
-    ``count_uncertain`` marks the V1 fallback ``K=2`` taken without evidence
-    (spec 5.3 rule 4), which must be quality-checked after separation.
+    ``count_uncertain`` marks a count taken without a calibrated confidence —
+    the V1 fallback ``K=2`` of spec 5.3 rule 4, and also a count read off
+    diarization activity, which is real evidence about *how many* people are
+    talking but carries no calibrated confidence to report alongside it.
     """
 
     count: int | None

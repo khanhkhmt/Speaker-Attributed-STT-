@@ -71,7 +71,30 @@ Gỡ blocker này làm lộ 3 lỗi thật mà đường fake không thể phát
 | OSD gộp chunk | timestamp phồng lên ~20× (overlap 2.5–5 s bị báo 146–292 s) | pyannote chỉ overlap-add *sau* convert; với `skip_conversion` phải tự `Inference.aggregate` theo `model.receptive_field`, nếu không output per-chunk bị đọc phẳng thành timeline 1 s/frame |
 | Merge nhầm 2 người | hai nguồn của cùng vùng overlap bị gán chung một `session_speaker_id` | source bị reject tạo temporary ID nhưng không có cannot-link với source kia cùng crop, nên reconciliation gộp lại (spec 5.6, 5.8.7) |
 
-### Cập nhật 18/08/2026 — ngôn ngữ chốt theo phiên, linking dùng nhãn diarization
+### Cập nhật 18/08/2026 (b) — bộ đếm người đồng thời được nạp bằng chứng
+
+Một upload 20 phút dựng sẵn 3 người (`overlap_3speaker_vi_20min.mp3`) cho thấy
+`estimate_source_count` được gọi với `CountingEvidence()` **rỗng** ở cả hai
+pipeline, nên quy tắc 4 của spec §5.3 luôn bắn: giả định K=2, gắn
+`count_uncertain`. Toàn bộ 55 segment overlap của job đó ghi
+`estimated_concurrent_speakers = 2`, và các dòng K=3/K=4 của bảng routing trở
+thành code chết — vùng 3 người bị ép qua separator 2 nguồn.
+
+Thêm `CountingEvidence.diarization_active_speakers` (số cluster mà diarization
+báo đang nói trong vùng) và quy tắc 3b tương ứng, xếp **dưới** TS-VAD và
+multichannel vì nó không có confidence hiệu chỉnh — và không bịa ra một cái:
+`confidence=None`, `count_uncertain=True`, method `diarization_activity`.
+
+Chạy lại đúng file đó: 4 segment nay ghi `estimated_concurrent_speakers = 3`, đi
+đường `MIXTURE_ASR_UNSUPPORTED` với `source_track = NULL` thay vì bị tách làm hai
+nguồn giả, và job lần đầu tiên mang cảnh báo `unsupported_concurrency`. Router
+không phải sửa gì — nó đã đúng từ trước, chỉ chưa bao giờ được kích hoạt.
+
+Kèm theo: `/v1/jobs/{id}/result` ở nhánh nạp lại từ PostgreSQL (topology queue)
+thiếu số người trong phiên nên console luôn hiện `—`. Nay cả hai nhánh trả
+`session_speakers`, đếm từ segment và loại sink `Unknown`.
+
+### Cập nhật 18/08/2026 (a) — ngôn ngữ chốt theo phiên, linking dùng nhãn diarization
 
 Một upload 15 phút tiếng Việt chạy bằng `SASTT_ENGINE=real` cho 86/91 segment
 overlap ra `Unknown` và 20 segment chứa chữ Hán/Hangul/Cyrillic. Điều tra bằng đo

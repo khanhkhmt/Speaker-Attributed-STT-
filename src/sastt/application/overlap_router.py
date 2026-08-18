@@ -62,6 +62,10 @@ class CountingEvidence:
 
     roster_active_speakers: int | None = None
     roster_confidence: float | None = None
+    #: Distinct speakers the diarizer reports as active over the region. Real
+    #: evidence about *how many* people are talking, but with no calibrated
+    #: confidence attached, so it never claims one (spec 0.3).
+    diarization_active_speakers: int | None = None
     multichannel_activity_speakers: int | None = None
     multichannel_confidence: float | None = None
     research_estimate: int | None = None
@@ -78,7 +82,15 @@ def estimate_source_count(evidence: CountingEvidence, config: SasttConfig) -> So
     1. enrolled roster + TS-VAD/target activity, when confident enough;
     2. multichannel activity guidance;
     3. Multi-Decoder DPRNN, research only;
+    3b. diarization activity — weaker than the above because it has no
+        calibrated confidence, but far better than assuming. Ranked here rather
+        than higher precisely because it cannot clear a confidence gate;
     4. otherwise V1 assumes ``K = 2`` and marks the estimate uncertain.
+
+    Rule 3b matters more than its position suggests: without it every overlap
+    region reports two concurrent speakers whatever the audio contains, so the
+    three-speaker rows of the routing table below are unreachable and a
+    three-way overlap is silently forced through a two-source separator.
     """
     minimum = config.source_count.minimum_confidence
 
@@ -109,6 +121,15 @@ def estimate_source_count(evidence: CountingEvidence, config: SasttConfig) -> So
             count=evidence.research_estimate,
             confidence=evidence.research_confidence,
             method="multidecoder_research",
+        )
+
+    if evidence.diarization_active_speakers is not None:
+        return SourceCountEstimate(
+            count=max(1, evidence.diarization_active_speakers),
+            # Deliberately null: diarization tells us how many, not how sure.
+            confidence=None,
+            method="diarization_activity",
+            count_uncertain=True,
         )
 
     # Spec 5.3 rule 4: no evidence -> K=2, flagged uncertain, quality-checked later.

@@ -522,6 +522,7 @@ def create_app(
                 "config_version": job.config_version,
                 "warnings": job.warnings,
                 "degraded_mode": job.degraded,
+                "session_speakers": count_session_speakers(segments),
                 "segments": segments,
                 "text": render_transcript_from_public_segments(segments),
             }
@@ -535,6 +536,9 @@ def create_app(
             "warnings": result.warnings,
             "degraded_mode": result.degraded,
             "estimated_session_speakers": result.estimated_session_speakers,
+            "session_speakers": count_session_speakers(
+                [segment.to_public_dict() for segment in result.segments]
+            ),
             "segments": [segment.to_public_dict() for segment in result.segments],
             "text": render_transcript(result.segments),
         }
@@ -783,6 +787,23 @@ def _voice_identity_view(state: AppState, tenant_id: str, identity_id: str) -> d
         else None,
         "consent_ref_present": bool(metadata["consent_ref"]),
     }
+
+
+def count_session_speakers(segments: list[dict[str, Any]]) -> int:
+    """Distinct identified people in a transcript — the console's "Global speakers".
+
+    Derived from the segments so it is available on both result paths: a job
+    replayed from PostgreSQL has no in-memory ``OfflineResult`` to read the
+    diarizer's own estimate from. The unattributed sink is excluded — it is one
+    bucket holding every source that could not be identified, not a person.
+    """
+    return len(
+        {
+            str(segment.get("session_speaker_id"))
+            for segment in segments
+            if segment.get("session_speaker_id") and segment.get("identity_status") != "unknown"
+        }
+    )
 
 
 def render_transcript_from_public_segments(segments: list[dict[str, Any]]) -> str:

@@ -177,6 +177,27 @@ class OfflinePipeline:
             return configured
         return seconds_to_ms(self.config.speaker_embedding.minimum_clean_speech_seconds)
 
+    def counting_evidence(
+        self, diarization: DiarizationResult | None, interval: TimeInterval
+    ) -> CountingEvidence:
+        """How many distinct speakers the diarizer has talking over ``interval``.
+
+        Spec 5.3 ranks this below TS-VAD and multichannel guidance, but without
+        it the counter has nothing at all and falls to the ``K=2`` assumption for
+        every region — which makes the three-speaker rows of the routing table
+        dead code and sends a three-way overlap through a two-source separator.
+        """
+        if diarization is None:
+            return CountingEvidence()
+        active = {
+            turn.cluster_id
+            for turn in diarization.regular_tracks
+            if turn.interval.intersects(interval)
+        }
+        if not active:
+            return CountingEvidence()
+        return CountingEvidence(diarization_active_speakers=len(active))
+
     def _active_speakers(
         self,
         diarization: DiarizationResult | None,
@@ -339,8 +360,11 @@ class OfflinePipeline:
         if overlap_regions:
             _report_stage(on_stage, JobState.SEPARATING)
         for region in overlap_regions:
-            count = estimate_source_count(CountingEvidence(), self.config)
-            decision = route_overlap(region, count, self.config, osd_positive=True)
+            evidence = self.counting_evidence(diarization, region.interval)
+            count = estimate_source_count(evidence, self.config)
+            decision = route_overlap(
+                region, count, self.config, evidence=evidence, osd_positive=True
+            )
             region_groups, region_warnings, region_degraded = self.handle_overlap_region(
                 mono, region, decision, state, ctx, diarization=diarization
             )
