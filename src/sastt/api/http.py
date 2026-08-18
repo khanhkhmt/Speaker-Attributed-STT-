@@ -39,7 +39,13 @@ from sastt.adapters.storage import S3ObjectStore
 from sastt.application.fusion import ConfidenceCalibrator, load_confidence_calibrator
 from sastt.application.offline_pipeline import OfflinePipeline, OfflineResult, PipelineAdapters
 from sastt.application.streaming_pipeline import StreamingSession
-from sastt.config import Environment, SasttConfig, load_config, load_manifests
+from sastt.config import (
+    Environment,
+    SasttConfig,
+    load_config,
+    load_linking_overlay,
+    load_manifests,
+)
 from sastt.domain.audio import CANONICAL_SAMPLE_RATE, AudioBuffer, TimeInterval, seconds_to_ms
 from sastt.domain.errors import (
     ConfigurationError,
@@ -57,6 +63,7 @@ from sastt.ports.storage import JobStore, ObjectStore
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WEB_DIR = REPO_ROOT / "web"
 SCENARIO_DIR = REPO_ROOT / "tests" / "fixtures"
+DEFAULT_LINKING_THRESHOLDS = REPO_ROOT / "configs" / "linking-thresholds.demo.yaml"
 
 DEV_TENANT_HEADER = "X-Tenant-Id"
 DEFAULT_DEV_TENANT = "tenant_dev"
@@ -300,10 +307,10 @@ def create_app(
         environment=env,
         manifest_dir=REPO_ROOT / "model-manifests",
         # Linking thresholds are null in the shipped config and the pipeline then
-        # fails closed (spec 5.10). The demo supplies a calibration-shaped
-        # override so speaker linking is observable; a real deployment gets these
-        # from a calibration release (spec 21.3).
-        overrides={"source_linking": {"accept_threshold": 0.55, "ambiguous_margin": 0.10}},
+        # fails closed (spec 5.10). Development loads an overlay file so linking
+        # is observable; a deployment points SASTT_LINKING_THRESHOLDS at an
+        # approved calibration release instead (spec 21.3).
+        overrides=load_linking_overlay(DEFAULT_LINKING_THRESHOLDS),
     )
     if env.is_production:
         raise ConfigurationError(

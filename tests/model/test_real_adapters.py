@@ -121,6 +121,38 @@ class TestAsr:
         assert "asr_word_probability" in result.raw_scores
         assert result.language_score is None
 
+    def test_identifies_the_language_of_real_speech(
+        self, recognizer, clean_speech_wav, ctx
+    ) -> None:
+        from sastt.adapters.ffmpeg import FfmpegAudioDecoder
+
+        asset = FfmpegAudioDecoder().decode(clean_speech_wav, ctx)
+
+        language, probability = recognizer.detect_language(asset.mono_16k, ctx)
+
+        assert language == "en", "VoxConverse dev excerpt is English"
+        assert 0.0 <= probability <= 1.0
+
+    def test_identification_is_less_certain_on_a_fragment(
+        self, recognizer, clean_speech_wav, ctx
+    ) -> None:
+        """Why the pipeline identifies once per session rather than per crop.
+
+        A few hundred milliseconds is not enough evidence about a language; this
+        pins the observation that motivates ``language_detection.auto_once``
+        without asserting a particular wrong answer, which would be flaky.
+        """
+        from sastt.adapters.ffmpeg import FfmpegAudioDecoder
+
+        asset = FfmpegAudioDecoder().decode(clean_speech_wav, ctx)
+        whole = asset.mono_16k
+        fragment = whole.crop_ms(TimeInterval(whole.start_ms + 1_000, whole.start_ms + 1_300))
+
+        _whole_language, whole_probability = recognizer.detect_language(whole, ctx)
+        _fragment_language, fragment_probability = recognizer.detect_language(fragment, ctx)
+
+        assert whole_probability >= fragment_probability
+
 
 # --------------------------------------------------------------------------- #
 # Speaker embedding (spec 5.6)

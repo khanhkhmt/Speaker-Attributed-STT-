@@ -1,0 +1,20 @@
+# Development linking thresholds — NOT a calibration release (spec 21.3).
+#
+# The shipped configuration leaves accept_threshold and ambiguous_margin null and
+# the pipeline fails closed. That makes speaker linking unobservable in a demo, so
+# the API and the worker load this overlay to switch it on.
+#
+# These two numbers have never been measured. Measurements taken on 18/08/2026
+# against CAM++ on clean VoxConverse speech show they are, if anything, too strict
+# at the short end: at 1500 ms — the pipeline's own minimum — only 2 of 6
+# same-speaker pairs reach 0.55, and observed link margins on separated overlap
+# sources average 0.098, below the 0.10 gate.
+#
+# Replace this file with an approved calibration release before any deployment
+# that presents linked speaker names as a product claim.
+release_id: demo_uncalibrated_2026_08
+status: unapproved
+measured: false
+source_linking:
+  accept_threshold: 0.55
+  ambiguous_margin: 0.10

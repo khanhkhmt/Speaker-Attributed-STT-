@@ -36,9 +36,16 @@ class SpeakerEmbedder(Protocol):
         speech_intervals: list[TimeInterval] | None = None,
         origin: EmbeddingOrigin = "clean",
         source_track: int | None = None,
+        minimum_speech_ms: int | None = None,
     ) -> SpeakerEmbedding:
         """Raises :class:`~sastt.domain.errors.InsufficientSpeechForEmbeddingError`
-        when the clean speech is shorter than the configured minimum."""
+        when the clean speech is shorter than the minimum.
+
+        ``minimum_speech_ms`` overrides the adapter's configured floor for one
+        call. Building a session centroid and comparing a source against an
+        existing centroid are different questions and do not need the same
+        amount of speech, so the caller decides which floor applies (spec 5.6,
+        5.8)."""
         ...
 
 

@@ -64,6 +64,13 @@ source_linking:
   ambiguous_margin: null
   continuity_bonus: 0.02
   algorithm: hungarian
+  # Comparing a source with an existing centroid needs less speech than building
+  # one. null reuses speaker_embedding.minimum_clean_speech_seconds.
+  min_embedding_ms: null
+  restrict_to_active_clusters: true
+  # unknown | diarization_constrained. See config.py: the second path is not
+  # validated against labelled overlap audio and is off by default.
+  short_source_policy: unknown
 
 voice_id:
   enabled: true
@@ -78,6 +85,13 @@ asr:
   final_model_path: /models/faster-whisper-large-v3
   # null = Whisper auto-detect; set e.g. vi or en only when the source is known.
   language: null
+  language_detection:
+    # auto_once identifies the language once per session from pooled speech and
+    # pins it. Per-crop identification is unreliable below ~2 s and is what makes
+    # Whisper emit memorised subtitle credits on short overlap sources.
+    mode: auto_once
+    sample_seconds: 30
+    min_probability: 0.6
   word_timestamps: true
   compute_type: int8_float16
   final_rescore: false

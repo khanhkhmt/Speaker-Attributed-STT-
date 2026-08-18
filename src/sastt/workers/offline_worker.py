@@ -38,7 +38,7 @@ from sastt.adapters.queue.redis_queue import (
     build_client,
 )
 from sastt.adapters.storage import S3ObjectStore
-from sastt.config import load_config
+from sastt.config import load_config, load_linking_overlay
 from sastt.domain.errors import SasttError
 from sastt.domain.events import JobState
 from sastt.observability import CallContext, InMemoryMetrics
@@ -51,6 +51,7 @@ LOG = logging.getLogger("sastt.worker")
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = REPO_ROOT / "configs" / "default.yaml"
 MANIFEST_DIR = REPO_ROOT / "model-manifests"
+DEFAULT_LINKING_THRESHOLDS = REPO_ROOT / "configs" / "linking-thresholds.demo.yaml"
 
 
 class OfflineWorker:
@@ -93,9 +94,9 @@ class OfflineWorker:
                 self.config_path or DEFAULT_CONFIG,
                 environment="development",
                 manifest_dir=MANIFEST_DIR,
-                # Demo-only calibration-shaped override; production inference
-                # keeps null thresholds and fails closed until calibrated.
-                overrides={"source_linking": {"accept_threshold": 0.55, "ambiguous_margin": 0.10}},
+                # Same overlay the API loads, so the two processes cannot drift
+                # apart on the thresholds that decide identity (spec 21.3).
+                overrides=load_linking_overlay(DEFAULT_LINKING_THRESHOLDS),
             )
             builder = build_fake_engine if self.engine_name == "fake" else build_real_engine
             self._engine = builder(self._config)

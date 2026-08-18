@@ -316,6 +316,9 @@ class StreamingSession:
         )
 
         speech = self.adapters.vad.detect(buffer, ctx.child("vad"))
+        # No-op until the ring holds enough speech to identify from; once it
+        # does, every later window decodes with the same language (spec 5.5).
+        self.pipeline.resolve_session_language(buffer, speech, ctx)
         closed = [
             interval
             for interval in speech
@@ -340,7 +343,7 @@ class StreamingSession:
                 count = estimate_source_count(CountingEvidence(), self.config)
                 decision = route_overlap(region, count, self.config, osd_positive=True)
                 region_groups, _, _ = self.pipeline.handle_overlap_region(
-                    buffer, region, decision, self.speakers, ctx
+                    buffer, region, decision, self.speakers, ctx, diarization=diarization
                 )
                 groups.extend(region_groups)
 
@@ -444,6 +447,12 @@ class StreamingSession:
             tenant_id=self.tenant_id,
             calibrator=self.calibrator,
             allow_provisional_continuity=True,
+        )
+        # Inherit the language the rolling pass already committed to. Re-deciding
+        # here could make the final transcript switch language away from the
+        # provisional events already delivered, which a revision cannot justify.
+        final_pipeline.pin_language(
+            self.pipeline.session_language, self.pipeline.language_probability
         )
         result = final_pipeline.run(payload, ctx, session_id=self.session_id)
         # Reconciliation may have merged temporary identities: publish the label

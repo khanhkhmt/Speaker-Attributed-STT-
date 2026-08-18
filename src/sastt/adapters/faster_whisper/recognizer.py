@@ -65,6 +65,23 @@ class FasterWhisperRecognizer:
     def model_version(self) -> str:
         return self._model_version
 
+    def detect_language(self, buffer: AudioBuffer, ctx: CallContext) -> tuple[str, float]:
+        """Identify the language from up to ~90 s of the buffer — spec 5.5.
+
+        Runs the encoder and the language head only, so it costs a fraction of a
+        decode. ``language_detection_segments`` counts 30 s windows; three of
+        them vote, which keeps one unusual window from deciding the session.
+        """
+        ctx.check()
+        mono = buffer.to_mono().samples[0]
+        try:
+            language, probability, _all_probabilities = self._model.detect_language(
+                mono, language_detection_segments=3
+            )
+        except Exception as exc:  # noqa: BLE001 - never leak a backend exception
+            raise SasttError(f"language identification failed: {exc}") from exc
+        return str(language), float(probability)
+
     def transcribe(
         self,
         buffer: AudioBuffer,

@@ -71,6 +71,43 @@ Gỡ blocker này làm lộ 3 lỗi thật mà đường fake không thể phát
 | OSD gộp chunk | timestamp phồng lên ~20× (overlap 2.5–5 s bị báo 146–292 s) | pyannote chỉ overlap-add *sau* convert; với `skip_conversion` phải tự `Inference.aggregate` theo `model.receptive_field`, nếu không output per-chunk bị đọc phẳng thành timeline 1 s/frame |
 | Merge nhầm 2 người | hai nguồn của cùng vùng overlap bị gán chung một `session_speaker_id` | source bị reject tạo temporary ID nhưng không có cannot-link với source kia cùng crop, nên reconciliation gộp lại (spec 5.6, 5.8.7) |
 
+### Cập nhật 18/08/2026 — ngôn ngữ chốt theo phiên, linking dùng nhãn diarization
+
+Một upload 15 phút tiếng Việt chạy bằng `SASTT_ENGINE=real` cho 86/91 segment
+overlap ra `Unknown` và 20 segment chứa chữ Hán/Hangul/Cyrillic. Điều tra bằng đo
+đạc trên chính weight đang chạy tìm ra hai nguyên nhân độc lập.
+
+**Ngôn ngữ nhận dạng lại trên từng crop.** `asr.language: null` được truyền vào
+mọi lần `transcribe`, kể cả crop 0.4 s của nguồn overlap đã tách; log ghi 274 lần
+detect ra 11 ngôn ngữ trên một file đơn ngữ. Đo lại theo độ dài crop trên chính
+audio đó: 0.3 s đúng 18%, 1 s đúng 68%, 2 s đúng 82%, 30 s đúng 100%; text rác
+chỉ xuất hiện ở crop ≤1 s. Pipeline nay chốt ngôn ngữ **một lần cho cả phiên** từ
+speech đã gộp (`asr.language_detection.mode: auto_once`), không đủ tự tin thì
+không chốt và thêm cảnh báo `session_language_uncertain`. Chạy lại đúng file đó:
+text rác 20 → **0**, số lần detect 274 → **0**, transcript ngoài overlap giữ
+nguyên trong sai số 0.1% (13 487 → 13 473 ký tự).
+
+**Gán nguồn overlap.** Ranh giới thành/bại là độ dài chứ không phải chất lượng
+model: segment overlap hỏng dài trung bình 395 ms, segment thành công 1 984 ms.
+Đo CAM++ trên audio sạch cho thấy dưới 500 ms embedding là nhiễu — ở 300 ms
+cosine cùng người (0.046) thấp hơn khác người (0.077). pyannote thì phân biệt
+được ≥2 người ở **100%** các vùng đó (32/32 cặp nguồn đồng thời), nhưng nhánh
+overlap không dùng thông tin này. Nay `link_sources` nhận `candidate_keys` từ
+`regular_tracks` và chỉ chấm điểm với người đang nói
+(`source_linking.restrict_to_active_clusters`, mặc định bật), và
+`source_linking.min_embedding_ms` tách mốc **so** với centroid khỏi mốc **dựng**
+centroid.
+
+Ngưỡng `0.55/0.10` không còn hardcode ở `api/http.py` và `workers/offline_worker.py`;
+cả hai đọc `configs/linking-thresholds.demo.yaml` qua `load_linking_overlay`, hoặc
+`SASTT_LINKING_THRESHOLDS` nếu được đặt. File đó tự khai `status: unapproved`.
+
+**Chưa nghiệm thu:** hai cơ chế gán nguồn độc lập (embedding + Hungarian có ràng
+buộc, và đối chiếu năng lượng theo vùng nói riêng) chỉ đồng thuận 3/6 trên bài
+toán nhị phân — đúng mức ngẫu nhiên. Không có nhãn người gán thì không kết luận
+được cơ chế nào đúng, nên `source_linking.short_source_policy` mặc định vẫn là
+`unknown`; nhánh `diarization_constrained` đã hiện thực nhưng tắt.
+
 ### Cập nhật 14/08/2026 — chặn transcript không khả dĩ
 
 Một file upload 20 phút chạy bằng `SASTT_ENGINE=real` đã phát hiện ASR có thể sinh

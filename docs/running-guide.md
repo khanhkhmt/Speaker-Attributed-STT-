@@ -510,6 +510,49 @@ Thiếu đo đạc thì capacity report phải ở `pending`; không thay nó b�
   ứng.
 - Voice Registry trong API hiện là local/in-memory; persistent pgvector cần
   wiring/auth phù hợp trước triển khai nhiều replica.
+- `source_linking.short_source_policy: diarization_constrained` **chưa được
+  nghiệm thu trên dữ liệu có nhãn**. Bật nó là đánh đổi `Unknown` trung thực lấy
+  rủi ro gán sai tên một cách tự tin. Giữ `unknown` cho đến khi có bộ đánh giá.
+
+## 13.1 Ngôn ngữ ASR (`asr.language_detection`)
+
+Whisper nhận dạng ngôn ngữ từ đúng đoạn audio được đưa vào, nên chạy nhận dạng
+lại trên từng crop khiến nó phải quyết định từ vài trăm mili-giây của một nguồn
+overlap đã tách. Đo trên một file tiếng Việt 15 phút: crop 0.3 s trả đúng 18%,
+crop 30 s trả đúng 100%, và các lượt sai ngôn ngữ chính là nơi model sinh ra
+credit phụ đề học thuộc (`한글자막 by …`, `Субтитры создавал …`).
+
+| `mode` | Hành vi |
+|---|---|
+| `auto_once` (mặc định) | Nhận dạng một lần từ `sample_seconds` speech đã gộp, rồi dùng lại cho mọi lần gọi |
+| `fixed` | Dùng `asr.language`, không nhận dạng. Bắt buộc phải đặt `asr.language` |
+| `per_segment` | Khôi phục hành vi cũ, chỉ dùng cho phiên thật sự đa ngôn ngữ |
+
+Nếu xác suất dưới `min_probability`, pipeline **không** chốt, thêm cảnh báo
+`session_language_uncertain` và để backend tự quyết từng lần — thà không chốt
+còn hơn chốt sai cho cả phiên.
+
+## 13.2 Ngưỡng linking (`source_linking`)
+
+Ngưỡng không còn hardcode trong API và worker. Cả hai đọc cùng một file để không
+trôi lệch nhau:
+
+```bash
+export SASTT_LINKING_THRESHOLDS=/path/to/calibration-release.yaml
+```
+
+Mặc định development dùng `configs/linking-thresholds.demo.yaml`. **File đó không
+phải calibration release**: hai con số trong đó chưa từng được đo. Không có file
+nào được cấu hình thì ngưỡng giữ `null` và pipeline fail-closed.
+
+Hai knob còn lại:
+
+- `min_embedding_ms` — lượng speech tối thiểu để **so** một nguồn với centroid
+  đã có. Khác với `speaker_embedding.minimum_clean_speech_seconds`, thứ quy định
+  lượng speech để **dựng** centroid mới. `null` dùng chung mốc dựng centroid.
+- `restrict_to_active_clusters` (mặc định bật) — chỉ chấm điểm nguồn với những
+  người mà diarization báo đang nói trong vùng đó. Nếu diarization không có ý
+  kiến về vùng đó, ma trận giữ nguyên thay vì ép tất cả thành `Unknown`.
 
 ## 14. Bàn giao vận hành tối thiểu
 

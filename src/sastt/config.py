@@ -196,6 +196,27 @@ class SourceLinkingConfig(_Base):
     continuity_bonus: float = Field(0.02, ge=0.0, le=0.05)
     algorithm: Literal["hungarian"] = "hungarian"
 
+    #: Speech needed before a separated source may be *compared* to an existing
+    #: centroid. Distinct from ``speaker_embedding.minimum_clean_speech_seconds``,
+    #: which governs *building* a centroid — a harder question that needs more
+    #: audio (spec 5.6, 5.8). ``None`` reuses the embedding minimum.
+    min_embedding_ms: int | None = Field(None, ge=100)
+
+    #: Score a source only against the speakers the diarizer reports as active
+    #: over the region (spec 5.2 regular tracks are the source of truth).
+    restrict_to_active_clusters: bool = True
+
+    #: What to do with a source too short to embed reliably.
+    #:
+    #: ``unknown`` leaves it unattributed, which is the measured-safe default:
+    #: below ~500 ms a speaker embedding carries no usable identity signal.
+    #: ``diarization_constrained`` allows attribution when the diarizer reports
+    #: exactly as many active speakers as there are sources, so the assignment
+    #: is a permutation over a known set rather than an open choice. That path
+    #: has NOT been validated against labelled overlap audio; enabling it trades
+    #: honest ``Unknown`` for a risk of confident misattribution (spec 18 rule 7).
+    short_source_policy: Literal["unknown", "diarization_constrained"] = "unknown"
+
     @property
     def is_calibrated(self) -> bool:
         return self.accept_threshold is not None and self.ambiguous_margin is not None
@@ -220,11 +241,33 @@ class VoiceIdConfig(_Base):
         return self
 
 
+class LanguageDetectionConfig(_Base):
+    """How the ASR language is decided for a session — spec 5.5.
+
+    Whisper identifies the language from the audio it is handed, so running
+    identification per crop asks it to decide from a few hundred milliseconds of
+    a separated overlap source. Measured on a single-language session, 0.3 s
+    crops return the correct language 18% of the time against 100% at 30 s, and
+    the wrong-language decodes are where Whisper emits memorised subtitle
+    credits rather than a transcription. ``auto_once`` therefore identifies the
+    language once, from pooled speech, and pins it for every later call.
+    """
+
+    #: ``auto_once`` identifies once per session; ``fixed`` trusts ``AsrConfig.language``;
+    #: ``per_segment`` restores per-call identification for genuinely mixed audio.
+    mode: Literal["auto_once", "fixed", "per_segment"] = "auto_once"
+    #: How much VAD-confirmed speech to pool before identifying.
+    sample_seconds: float = Field(30.0, gt=0)
+    #: Below this probability the result is not trusted and nothing is pinned.
+    min_probability: float = Field(0.6, ge=0.0, le=1.0)
+
+
 class AsrConfig(_Base):
     realtime_model_path: str | None = "/models/faster-whisper-large-v3-turbo"
     final_model_path: str | None = "/models/faster-whisper-large-v3"
     # None delegates language identification to Whisper; callers may pin an ISO code.
     language: str | None = None
+    language_detection: LanguageDetectionConfig = Field(default_factory=LanguageDetectionConfig)
     word_timestamps: bool = True
     compute_type: str = "int8_float16"
     final_rescore: bool = False
@@ -233,6 +276,12 @@ class AsrConfig(_Base):
     def _check_rescore(self) -> AsrConfig:
         if self.final_rescore and not self.final_model_path:
             raise ValueError("final_rescore requires final_model_path")
+        return self
+
+    @model_validator(mode="after")
+    def _check_fixed_language(self) -> AsrConfig:
+        if self.language_detection.mode == "fixed" and not self.language:
+            raise ValueError("language_detection.mode 'fixed' requires asr.language to be set")
         return self
 
 
@@ -470,6 +519,31 @@ def validate_for_environment(
             )
 
 
+def load_linking_overlay(path: Path | str | None = None) -> dict[str, Any]:
+    """Read linking thresholds from a file instead of hardcoding them.
+
+    Two processes need the same thresholds to agree — the API creates jobs and
+    the worker runs them — and a literal repeated in both is a silent way for
+    them to drift apart. Reading one file also puts the provenance of the numbers
+    next to the numbers, which matters because the shipped ones are a development
+    placeholder rather than a calibration release (spec 21.3).
+
+    Returns ``{}`` when no file is configured, which leaves the null thresholds
+    of the shipped configuration in place and the pipeline failing closed.
+    """
+    resolved = path or os.environ.get("SASTT_LINKING_THRESHOLDS")
+    if not resolved:
+        return {}
+    overlay_path = Path(resolved)
+    if not overlay_path.exists():
+        raise ConfigurationError(f"linking threshold file not found: {overlay_path}")
+    raw = yaml.safe_load(overlay_path.read_text(encoding="utf-8")) or {}
+    thresholds = raw.get("source_linking")
+    if not isinstance(thresholds, dict):
+        raise ConfigurationError(f"{overlay_path} has no source_linking section")
+    return {"source_linking": dict(thresholds)}
+
+
 def load_config(
     path: Path | str = DEFAULT_CONFIG_PATH,
     *,
@@ -528,6 +602,7 @@ __all__ = [
     "ConfidenceConfig",
     "DiarizationConfig",
     "Environment",
+    "LanguageDetectionConfig",
     "ModelFile",
     "ModelManifest",
     "OverlapDetectionConfig",
@@ -541,6 +616,7 @@ __all__ = [
     "StreamingConfig",
     "VoiceIdConfig",
     "load_config",
+    "load_linking_overlay",
     "aggregate_sha256",
     "load_manifests",
     "validate_for_environment",

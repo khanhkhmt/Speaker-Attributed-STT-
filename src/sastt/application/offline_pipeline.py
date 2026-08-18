@@ -35,6 +35,7 @@ from sastt.application.source_linking import link_sources
 from sastt.config import SasttConfig
 from sastt.domain.audio import (
     AudioBuffer,
+    FloatArray,
     TimeInterval,
     merge_intervals,
     seconds_to_ms,
@@ -79,6 +80,7 @@ MIN_TOKENS_FOR_DENSITY_GATE = 4
 WARNING_UNRELIABLE_SEPARATED_TRANSCRIPT = "unreliable_separated_transcript"
 WARNING_UNRELIABLE_MIXTURE_TRANSCRIPT = "unreliable_mixture_transcript"
 WARNING_UNRELIABLE_NON_OVERLAP_TRANSCRIPT = "unreliable_non_overlap_transcript"
+WARNING_LANGUAGE_UNCERTAIN = "session_language_uncertain"
 
 
 def _report_stage(callback: Callable[[JobState], None] | None, state: JobState) -> None:
@@ -138,6 +140,124 @@ class OfflinePipeline:
         self.tenant_id = tenant_id
         self.calibrator = calibrator or NullConfidenceCalibrator()
         self.allow_provisional_continuity = allow_provisional_continuity
+        #: Identified once per session, then reused by every ASR call (spec 5.5).
+        self._pinned_language: str | None = None
+        self._language_probability: float | None = None
+
+    # -- session language (spec 5.5) ------------------------------------------ #
+
+    @property
+    def session_language(self) -> str | None:
+        """The language every ASR call in this session must use.
+
+        ``None`` means "let the backend decide per call", which is only correct
+        before identification has succeeded or when ``per_segment`` is
+        configured deliberately.
+        """
+        if self.config.asr.language:
+            return self.config.asr.language
+        return self._pinned_language
+
+    @property
+    def language_probability(self) -> float | None:
+        return self._language_probability
+
+    # -- source linking (spec 5.8) -------------------------------------------- #
+
+    @property
+    def linking_minimum_speech_ms(self) -> int:
+        """Speech a separated source needs before it may be compared to a centroid.
+
+        Defaults to the prototype-building minimum, which is the conservative
+        reading: until a calibration release says a shorter comparison is sound,
+        the two questions share one floor (spec 5.6, 5.8).
+        """
+        configured = self.config.source_linking.min_embedding_ms
+        if configured is not None:
+            return configured
+        return seconds_to_ms(self.config.speaker_embedding.minimum_clean_speech_seconds)
+
+    def _active_speakers(
+        self,
+        diarization: DiarizationResult | None,
+        state: SessionSpeakerState,
+        interval: TimeInterval,
+    ) -> tuple[set[str] | None, int]:
+        """Session speakers the diarizer reports as active over ``interval``.
+
+        Returns the candidate keys and how many of them are cluster-backed. The
+        count excludes temporary identities: they are carried along so continuity
+        across crops still works, but they are not evidence about how many people
+        are talking, which is what makes a permutation decidable.
+        """
+        if diarization is None or not self.config.source_linking.restrict_to_active_clusters:
+            return None, 0
+        clusters = {
+            turn.cluster_id
+            for turn in diarization.regular_tracks
+            if turn.interval.intersects(interval)
+        }
+        keys: set[str] = set()
+        for cluster_id in clusters:
+            speaker = state.by_cluster(cluster_id)
+            if speaker is not None:
+                keys.add(speaker.session_speaker_id)
+        if not keys:
+            return None, 0
+        cluster_backed = len(keys)
+        # Temporary identities have no cluster, so diarization cannot contradict
+        # them; excluding them here would strand every provisional source.
+        keys |= {
+            speaker.session_speaker_id for speaker in state.active if speaker.cluster_id is None
+        }
+        return keys, cluster_backed
+
+    def pin_language(self, language: str | None, probability: float | None = None) -> None:
+        """Adopt a language decided elsewhere — used to carry a streaming
+        session's decision into its final pass so the final transcript cannot
+        silently switch language away from the provisional one already sent."""
+        if language:
+            self._pinned_language = language
+            self._language_probability = probability
+
+    def resolve_session_language(
+        self,
+        mono: AudioBuffer,
+        speech: list[TimeInterval],
+        ctx: CallContext,
+        *,
+        warnings: list[str] | None = None,
+    ) -> str | None:
+        """Identify the session language once, from pooled speech — spec 5.5.
+
+        Idempotent and cheap to call repeatedly: the streaming path invokes it
+        on every window and it does nothing until enough speech has arrived.
+        Silence is excluded because Whisper identifies from whatever it is
+        handed, and a window of room tone is not evidence about a language.
+        """
+        settings = self.config.asr.language_detection
+        if self.config.asr.language or settings.mode != "auto_once":
+            return self.session_language
+        if self._pinned_language is not None:
+            return self._pinned_language
+
+        target_ms = seconds_to_ms(settings.sample_seconds)
+        pooled = _pool_speech(mono, speech, target_ms)
+        if pooled is None:
+            return None
+
+        language, probability = self.adapters.recognizer.detect_language(
+            pooled, ctx.child("language_id")
+        )
+        if probability < settings.min_probability:
+            # Not confident enough to bind the whole session. Stay unpinned and
+            # try again on the next window rather than committing to a guess.
+            if warnings is not None and WARNING_LANGUAGE_UNCERTAIN not in warnings:
+                warnings.append(WARNING_LANGUAGE_UNCERTAIN)
+            return None
+        self._pinned_language = language
+        self._language_probability = probability
+        return language
 
     # -- entry point --------------------------------------------------------- #
 
@@ -206,6 +326,9 @@ class OfflinePipeline:
         # --- non-overlap ASR (spec 5.5, FR-005) ------------------------------ #
         _report_stage(on_stage, JobState.TRANSCRIBING)
         speech = self.adapters.vad.detect(mono, ctx.child("vad"))
+        # Decide the language before the first transcribe, so every crop in this
+        # session is decoded with the same one (spec 5.5).
+        self.resolve_session_language(mono, speech, ctx, warnings=warnings)
         groups: list[WordGroup] = []
         groups.extend(
             self.transcribe_non_overlap(mono, speech, overlap_regions, ctx, warnings=warnings)
@@ -219,7 +342,7 @@ class OfflinePipeline:
             count = estimate_source_count(CountingEvidence(), self.config)
             decision = route_overlap(region, count, self.config, osd_positive=True)
             region_groups, region_warnings, region_degraded = self.handle_overlap_region(
-                mono, region, decision, state, ctx
+                mono, region, decision, state, ctx, diarization=diarization
             )
             groups.extend(region_groups)
             warnings.extend(region_warnings)
@@ -319,7 +442,7 @@ class OfflinePipeline:
                 continue
             crop = mono.crop_ms(interval)
             result = self.adapters.recognizer.transcribe(
-                crop, ctx.child("asr"), language=self.config.asr.language
+                crop, ctx.child("asr"), language=self.session_language
             )
             words = words_owned_by(result.words, interval)
             if not words:
@@ -345,6 +468,8 @@ class OfflinePipeline:
         decision: RouteDecision,
         state: SessionSpeakerState,
         ctx: CallContext,
+        *,
+        diarization: DiarizationResult | None = None,
     ) -> tuple[list[WordGroup], list[str], bool]:
         warnings = list(decision.warnings)
         if not decision.runs_separation or self.adapters.separator is None:
@@ -365,13 +490,20 @@ class OfflinePipeline:
         )
         try:
             groups, extra_warnings, separation_degraded = self.separate_and_link(
-                mono, region, padded, decision, separator, state, ctx
+                mono, region, padded, decision, separator, state, ctx, diarization=diarization
             )
         except SeparationFailedError:
             # Spec 15: retry once with a smaller crop, then fall back to mixture ASR.
             try:
                 groups, extra_warnings, separation_degraded = self.separate_and_link(
-                    mono, region, region.interval, decision, separator, state, ctx
+                    mono,
+                    region,
+                    region.interval,
+                    decision,
+                    separator,
+                    state,
+                    ctx,
+                    diarization=diarization,
                 )
             except SeparationFailedError:
                 warnings.append("separation_failed_degraded")
@@ -394,6 +526,8 @@ class OfflinePipeline:
         separator: SpeechSeparator,
         state: SessionSpeakerState,
         ctx: CallContext,
+        *,
+        diarization: DiarizationResult | None = None,
     ) -> tuple[list[WordGroup], list[str], bool]:
         """Separate one region, link its sources, and emit one group per source."""
         requested = decision.requested_source_count or 2
@@ -431,9 +565,12 @@ class OfflinePipeline:
                         ctx,
                         source_track=index,
                         speech_intervals=speech,
+                        minimum_speech_ms=self.linking_minimum_speech_ms,
                     )
                 )
 
+            active_keys, active_clusters = self._active_speakers(diarization, state, window)
+            embedded = sum(1 for embedding in embeddings if embedding is not None)
             result = link_sources(
                 embeddings,
                 (
@@ -443,6 +580,14 @@ class OfflinePipeline:
                 ),
                 self.config.source_linking,
                 previous_mapping=previous_mapping,
+                candidate_keys=active_keys,
+                # A permutation over a known set is a different question from an
+                # open choice: it is decidable even when the score is weak.
+                constrained_permutation=(
+                    self.config.source_linking.short_source_policy == "diarization_constrained"
+                    and active_clusters > 1
+                    and active_clusters == embedded
+                ),
                 ctx=ctx,
             )
             previous_mapping = result.mapping()
@@ -452,7 +597,7 @@ class OfflinePipeline:
                 asr = self.adapters.recognizer.transcribe(
                     source_asr_buffers[index],
                     ctx.child("asr"),
-                    language=self.config.asr.language,
+                    language=self.session_language,
                     source_track=index,
                 )
                 words = tuple(words_owned_by(asr.words, owned))
@@ -558,7 +703,7 @@ class OfflinePipeline:
         """
         ctx = CallContext(stage="asr_mixture")
         crop = mono.crop_ms(region.interval)
-        result = self.adapters.recognizer.transcribe(crop, ctx, language=self.config.asr.language)
+        result = self.adapters.recognizer.transcribe(crop, ctx, language=self.session_language)
         words = tuple(words_owned_by(result.words, region.interval))
         if not words:
             return []
@@ -647,6 +792,7 @@ class OfflinePipeline:
         origin: EmbeddingOrigin = "separated",
         source_track: int | None = None,
         speech_intervals: list[TimeInterval] | None = None,
+        minimum_speech_ms: int | None = None,
     ) -> SpeakerEmbedding | None:
         """Embed a slice of clean or separated speech, honouring the gate of spec 5.6."""
         try:
@@ -664,6 +810,7 @@ class OfflinePipeline:
                 ctx.child("embedding"),
                 speech_intervals=speech,
                 origin=origin,
+                minimum_speech_ms=minimum_speech_ms,
                 source_track=source_track,
             )
         except InsufficientSpeechForEmbeddingError:
@@ -687,6 +834,51 @@ def is_plausible_transcript(words: tuple[Word, ...], speech_intervals: list[Time
     minimum_ms = token_count * MIN_SOURCE_SPEECH_MS_PER_TOKEN
     word_span_ms = max(word.end_ms for word in words) - min(word.start_ms for word in words)
     return speech_ms >= minimum_ms and word_span_ms >= minimum_ms
+
+
+def _pool_speech(
+    mono: AudioBuffer, speech: list[TimeInterval], target_ms: int
+) -> AudioBuffer | None:
+    """Concatenate VAD speech into one buffer of at most ``target_ms``.
+
+    Language identification wants speech, not position, so the pieces are joined
+    without preserving the gaps between them. The result deliberately carries the
+    first piece's ``start_sample``: its timestamps are meaningless and must never
+    reach a transcript.
+
+    Returns ``None`` when there is not enough speech to be worth identifying
+    from — half the target is the floor, so a short window waits for the next one
+    instead of deciding the session from two seconds of audio.
+    """
+    if not speech:
+        return None
+    pieces: list[FloatArray] = []
+    pooled_ms = 0
+    start_sample = None
+    for interval in merge_intervals(sorted(speech, key=lambda i: i.start_ms)):
+        clipped = interval.clamp(mono.interval)
+        if clipped is None or clipped.duration_ms <= 0:
+            continue
+        take = min(clipped.duration_ms, target_ms - pooled_ms)
+        if take <= 0:
+            break
+        window = TimeInterval(clipped.start_ms, clipped.start_ms + take)
+        crop = mono.crop_ms(window).to_mono()
+        if start_sample is None:
+            start_sample = crop.start_sample
+        pieces.append(crop.samples[0])
+        pooled_ms += take
+        if pooled_ms >= target_ms:
+            break
+    if not pieces or start_sample is None or pooled_ms < target_ms // 2:
+        return None
+    return AudioBuffer(
+        samples=np.ascontiguousarray(np.concatenate(pieces)[np.newaxis, :].astype(np.float32)),
+        sample_rate=mono.sample_rate,
+        start_sample=start_sample,
+        channel_layout=("mono",),
+        source_clock_hz=mono.source_clock_hz,
+    )
 
 
 def words_owned_by(words: list[Word], interval: TimeInterval) -> list[Word]:

@@ -35,6 +35,7 @@ REASON_ASSIGNED_DUMMY = "assigned_to_unknown"
 REASON_NO_PROTOTYPE = "no_prototype"
 REASON_CONTESTED_IDENTITY = "contested_identity"
 REASON_LINKED = "linked"
+REASON_LINKED_CONSTRAINED = "linked_diarization_constrained"
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,34 @@ def build_score_matrix(
     return matrix
 
 
+def restrict_to_candidates(
+    matrix: ScoreMatrix,
+    prototype_keys: list[str],
+    candidate_keys: set[str] | None,
+) -> ScoreMatrix:
+    """Blank the columns of speakers the diarizer says are not talking here.
+
+    Spec 5.2 makes the *regular* tracks the source of truth about who is active,
+    and spec 5.8 assigns sources to speakers. Scoring a separated source against
+    a speaker who is silent in this region asks the embedding a question the
+    diarization has already answered, and on a short crop the embedding answers
+    it badly.
+
+    An empty candidate set means the diarizer offered no opinion about this
+    region; that is not evidence that nobody is speaking, so the matrix is left
+    untouched rather than forcing every source to ``Unknown``.
+    """
+    if not candidate_keys:
+        return matrix
+    restricted = matrix.copy()
+    for j, key in enumerate(prototype_keys):
+        if key not in candidate_keys:
+            restricted[:, j] = -np.inf
+    if bool(np.all(np.isneginf(restricted))):
+        return matrix
+    return restricted
+
+
 def _apply_continuity_bonus(
     matrix: ScoreMatrix,
     prototype_keys: list[str],
@@ -103,11 +132,26 @@ def link_sources(
     config: SourceLinkingConfig,
     *,
     previous_mapping: dict[int, str] | None = None,
+    candidate_keys: set[str] | None = None,
+    constrained_permutation: bool = False,
     ctx: CallContext | None = None,
 ) -> LinkingResult:
-    """Assign each separated source to at most one session speaker — spec 5.8."""
+    """Assign each separated source to at most one session speaker — spec 5.8.
+
+    ``candidate_keys`` narrows the assignment to the speakers the diarizer
+    reports as active over this region; see :func:`restrict_to_candidates`.
+
+    ``constrained_permutation`` says the caller established that there are
+    exactly as many active speakers as sources. The assignment is then a
+    permutation over a known set, and the accept/margin thresholds — which exist
+    to decide whether a source belongs to *any* of an open list of speakers — are
+    answering a question that is no longer being asked. The caller enables this
+    deliberately; it is off unless configured (spec 5.8, 18 rule 7).
+    """
     prototype_keys = [prototype.speaker_key for prototype in prototypes]
-    base = build_score_matrix(embeddings, prototypes)
+    base = restrict_to_candidates(
+        build_score_matrix(embeddings, prototypes), prototype_keys, candidate_keys
+    )
     calibrated = config.is_calibrated
 
     if not prototypes:
@@ -128,7 +172,13 @@ def link_sources(
     )
 
     # Spec 5.8 step 4: one dummy Unknown column per source, so a source may reject.
+    # Under a constrained permutation the caller has established that the set of
+    # speakers is known and complete, so rejecting into Unknown is not one of the
+    # available answers; the dummy columns are priced out rather than removed, so
+    # a surplus source with nowhere to go still lands on one.
     dummy_value = config.accept_threshold if config.accept_threshold is not None else 0.0
+    if constrained_permutation:
+        dummy_value = -np.inf
     dummy = np.full((scored.shape[0], scored.shape[0]), -np.inf, dtype=np.float64)
     np.fill_diagonal(dummy, dummy_value)
     extended = np.concatenate([scored, dummy], axis=1)
@@ -195,6 +245,18 @@ def link_sources(
 
         score = float(base[i, j])
         assert config.accept_threshold is not None and config.ambiguous_margin is not None
+        if constrained_permutation and np.isfinite(score):
+            decisions.append(
+                LinkingDecision(
+                    source_track=i,
+                    session_speaker_id=prototype_keys[j],
+                    status="linked",
+                    score=score,
+                    margin=margin,
+                    reason=REASON_LINKED_CONSTRAINED,
+                )
+            )
+            continue
         if score < config.accept_threshold:
             decisions.append(
                 LinkingDecision(
@@ -301,6 +363,7 @@ __all__ = [
     "REASON_BELOW_ACCEPT",
     "REASON_CONTESTED_IDENTITY",
     "REASON_LINKED",
+    "REASON_LINKED_CONSTRAINED",
     "REASON_LOW_MARGIN",
     "REASON_NO_EMBEDDING",
     "REASON_NO_PROTOTYPE",
@@ -309,4 +372,5 @@ __all__ = [
     "LinkingResult",
     "build_score_matrix",
     "link_sources",
+    "restrict_to_candidates",
 ]

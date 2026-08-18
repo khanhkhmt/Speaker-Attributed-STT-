@@ -90,6 +90,23 @@ def scenario_factory() -> Any:
     return load_scenario
 
 
+@pytest.fixture
+def adapters_factory() -> Any:
+    """``build_adapters`` as a fixture.
+
+    Test modules under ``tests/unit`` cannot ``from conftest import ...``: pytest
+    imports every ``conftest.py`` under the same basename, so which one that name
+    resolves to depends on collection order. Fixtures are resolved by pytest
+    itself and do not have that ambiguity.
+    """
+    return build_adapters
+
+
+@pytest.fixture
+def pcm_factory() -> Any:
+    return scenario_pcm
+
+
 def build_adapters(
     scenario: Scenario,
     *,

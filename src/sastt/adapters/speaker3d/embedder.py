@@ -100,13 +100,15 @@ class CamPlusPlusEmbedder:
         speech_intervals: list[TimeInterval] | None = None,
         origin: EmbeddingOrigin = "clean",
         source_track: int | None = None,
+        minimum_speech_ms: int | None = None,
     ) -> SpeakerEmbedding:
         ctx.check()
+        floor = self.minimum_speech_ms if minimum_speech_ms is None else minimum_speech_ms
         speech_ms = total_duration_ms(speech_intervals) if speech_intervals else buffer.duration_ms
-        if speech_ms < self.minimum_speech_ms:
+        if speech_ms < floor:
             raise InsufficientSpeechForEmbeddingError(
-                f"{speech_ms} ms of clean speech is below the {self.minimum_speech_ms} ms minimum",
-                details={"speech_ms": speech_ms, "minimum_ms": self.minimum_speech_ms},
+                f"{speech_ms} ms of clean speech is below the {floor} ms minimum",
+                details={"speech_ms": speech_ms, "minimum_ms": floor},
             )
 
         waveform = _speech_only(buffer, speech_intervals)

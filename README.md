@@ -34,7 +34,7 @@ degraded with an explicit warning. This is a safety guard, not an accuracy claim
   rule 6 forbids presenting an oracle as a model test — so `tests/model/` skips with a
   reason instead of falling back to fakes.
 * **No invented confidences.** A versioned JSON calibration release can be configured; until one is approved and configured, every component confidence is `null` with `confidence_status="uncalibrated"` (spec 0.3).
-* **Language handling.** Offline uploads default to Whisper auto-detection. The console can pin `vi` or `en` per job; the selected hint is part of that job's config version, so an English upload is never implicitly forced through the Vietnamese decoder path.
+* **Language handling.** Offline uploads default to Whisper auto-detection, resolved **once per session** from pooled speech and then reused by every ASR call. Identifying per crop asks Whisper to decide from a few hundred milliseconds of a separated overlap source, which is where it emits memorised subtitle credits instead of a transcription (measured: 18% correct at 0.3 s against 100% at 30 s). The console can pin `vi` or `en` per job; the selected hint is part of that job's config version, so an English upload is never implicitly forced through the Vietnamese decoder path.
 * **No calibrated thresholds.** `source_linking` and `voice_id` thresholds ship as `null`
   and the pipeline fails closed: sources become `Unknown`/temporary rather than guessed
   (spec 5.10, 18 rule 7). Tests that exercise linking supply thresholds explicitly.
