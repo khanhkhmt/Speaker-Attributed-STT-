@@ -18,7 +18,7 @@ thật, không ước lượng.
 | M1 — Offline 2-speaker path | decode/resample, adapter pyannote + faster-whisper + MossFormer2 + CAM++, pin manifest, smoke test | **xong về luồng chức năng** — DoD, worker queue và chốt transcript thực đã kiểm chứng; benchmark/soak/accuracy evidence vẫn là nợ production |
 | M2 — Linking & Voice ID | pgvector registry, enrollment quality, deletion/audit | **~85%** — API local tạo/enroll/xem/xóa đã chạy; persistent pgvector cần được chọn khi deploy |
 | M3 — Near-realtime | queue/worker, backpressure, latency instrumentation | **~60%** — có WebSocket/revision/replay, bounded RAM ring + disk spool final pass, backpressure phía client và Prometheus stage/RTF/GPU-optional metrics. Tuy nhiên chưa chứng minh được stream hết audio và gán speaker ổn định trên audio thật; không đạt beta/production. Chưa có OTel, autoscale hay SLO đo trên baseline. |
-| M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~45%** — router + feature gate + adapter SepFormer 3mix 8 kHz đã có, và bộ đếm người đồng thời nay chạy bằng bằng chứng diarization nên các dòng K≥3 của router lần đầu tới được. Chưa pre-stage/benchmark checkpoint 3 nguồn, chưa có GSS/WeSep. **Đang chờ quyết định hướng đi — xem mục 6.** |
+| M4 — Beta/advanced overlap | SepFormer 3mix, concurrent counter, GSS, WeSep | **~45%** — router + feature gate + adapter SepFormer 3mix 8 kHz đã có, và bộ đếm người đồng thời nay chạy bằng bằng chứng diarization nên các dòng K≥3 của router lần đầu tới được. Chưa pre-stage/benchmark checkpoint 3 nguồn, chưa có GSS/WeSep. Việc gán người nói trong vùng overlap nay **đo được** (nhãn tay từ console + `deploy/overlap_eval.py`), và baseline đầu tiên đưa hai việc rẻ hơn lên trước quyết định A/B — xem mục 6. |
 | M5 — Production hardening | benchmark corpus, calibrator, load/soak, SBOM, capacity | **~30%** — calibrator release JSON, CLI benchmark/capacity/SBOM và guardrail test đã có; corpus, calibration release ký duyệt, soak/load và capacity evidence chưa có |
 
 ## 2. Gate chất lượng — lần chạy gần nhất
@@ -28,9 +28,9 @@ thật, không ước lượng.
 | Lint | `ruff check src tests deploy` | pass |
 | Format | `ruff format --check src tests deploy` | pass |
 | Type | `mypy` (strict) | pass, 62 source file |
-| Test thường | `pytest` | **297 passed**, 59 deselected (lần kiểm tra 19/08/2026; không gộp model/load/db) |
-| Test model | `pytest -m model` | **34 passed, 0 skipped** |
-| Test hạ tầng | `pytest -m db` | **21 passed** (Postgres + Redis thật) |
+| Test thường | `pytest` | **303 passed**, 59 deselected (19/08/2026; không gộp model/load/db) |
+| Test model | `pytest -m model` | **34 passed, 0 skipped** (18/08; chưa chạy lại 19/08) |
+| Test hạ tầng | `pytest -m db` | **21 passed** (18/08, Postgres + Redis thật; máy 19/08 không có hai dịch vụ này nên chưa chạy lại) |
 | Coverage | `--cov=sastt.domain --cov=sastt.application` | 88% (spec 16.3 yêu cầu ≥85%) |
 
 Test model chạy trên weights thật + audio thật (VoxConverse dev, public,
@@ -82,8 +82,9 @@ Gỡ blocker này làm lộ 3 lỗi thật mà đường fake không thể phát
 `linking_minimum_speech_ms` mặc định rơi về `speaker_embedding.minimum_clean_speech_seconds`
 = 1500 ms, trong khi trung vị một vùng overlap trên file đó là 660 ms. Adapter ném
 `InsufficientSpeechForEmbeddingError`, `embed_buffer` trả `None`, và không có
-vector nào để đưa vào Hungarian. Chẩn đoán cũ ở mục 6.1 ("dưới 500 ms embedding là
-nhiễu") mô tả một hiện tượng có thật nhưng nằm *sau* chỗ pipeline dừng lại.
+vector nào để đưa vào Hungarian. Chẩn đoán trước đây ("dưới 500 ms embedding là
+nhiễu", đo ở mục 5 ngày 18/08) mô tả một hiện tượng có thật nhưng nằm *sau* chỗ
+pipeline dừng lại; mục 6.1 đã được viết lại theo chẩn đoán này.
 
 Đáng chú ý hơn: separation đã chạy trên cửa sổ `region ± audio.overlap_context_seconds`
 (0.5 s mỗi phía), nhưng `separate_and_link` gọi `embed_buffer(source, owned)` — đúng
@@ -361,54 +362,76 @@ Chạy lần đầu tiên — trước đó pin 2.9 GiB nhưng chưa thực thi 
 Chậm hơn ~17% mà text không khác trên mẫu này; timestamp lệch 420 ms. Chưa trả
 lời được spec 21.6 (turbo hay large-v3 cho tiếng Việt) — cần benchmark.
 
-## 6. Công việc đang dở — cần chọn một hướng
+## 6. Công việc đang dở — vùng overlap
 
-**Trạng thái:** chờ quyết định. Không có việc nào khác đang bị chặn bởi mục này,
-nhưng mọi cải thiện tiếp theo cho vùng overlap đều nằm sau nó.
+**Trạng thái (19/08):** đã có thước đo và số baseline đầu tiên. Việc chọn hướng A
+hay B **chưa tới lượt** — số đo cho thấy còn hai khâu đứng trước nó, và cả hai đều
+rẻ hơn.
 
 ### 6.1 Vấn đề còn lại
 
-Sau các thay đổi ngày 18/08, vùng overlap vẫn còn hai giới hạn mà không cấu hình
-nào gỡ được:
-
 1. **Đoạn ngắn không định danh được.** Trên file 15 phút, 34/41 segment overlap
-   vẫn `Unknown`; trên file 3 người 20 phút là 43/50.
-   **Chẩn đoán này đã được sửa ngày 19/08 — xem cập nhật bên dưới.** Bản cũ ghi
-   nguyên nhân là "dưới 500 ms embedding là nhiễu", nhưng phần lớn nguồn ngắn
-   chưa từng được embed: mốc tối thiểu là 1500 ms còn trung vị vùng overlap là
-   660 ms, nên adapter trả `InsufficientSpeechForEmbeddingError` và không có
-   vector nào để so. Giới hạn thông tin ở mục 5 vẫn đúng cho vùng thực sự ngắn,
-   nhưng nó không phải nguyên nhân trội.
-2. **Ba người nói cùng lúc không tách được.** Bộ đếm nay báo đúng K=3 và router
-   trả `MIXTURE_ASR_UNSUPPORTED` — trung thực, nhưng vẫn là không có transcript
-   phân theo người cho vùng đó. MossFormer2 chỉ tách 2 nguồn.
+   ra `Unknown`; trên file 3 người 20 phút là 41/48 (85%).
+   Nguyên nhân trội: **phần lớn nguồn ngắn chưa từng được embed**. Mốc tối thiểu
+   là 1500 ms trong khi trung vị vùng overlap là 660 ms, nên CAM++ ném
+   `InsufficientSpeechForEmbeddingError` và không có vector nào để so. Ghi chú cũ
+   "dưới 500 ms embedding là nhiễu" mô tả một hiện tượng có thật nhưng nằm **sau**
+   chỗ pipeline dừng lại (chi tiết ở cập nhật 19/08).
+2. **Ngưỡng chấp nhận chưa từng được đo.** 7 segment gán được tên có cosine
+   0.455–0.611, vắt ngang mốc 0.55 mà `linking-thresholds.demo.yaml` tự khai
+   `measured: false`. Sau khi nới cửa sổ embedding, đây là chỗ nghẽn kế tiếp.
+3. **Ba người nói cùng lúc không tách được.** Bộ đếm báo đúng K=3 và router trả
+   `MIXTURE_ASR_UNSUPPORTED` — trung thực, nhưng không có transcript phân theo
+   người cho vùng đó. MossFormer2 chỉ tách 2 nguồn.
 
-### 6.2 Hai hướng, chọn một
+### 6.2 Hai hướng dài hạn — chưa tới lượt chọn
+
+Giữ nguyên để tham chiếu. Mục 6.4 giải thích vì sao hai việc khác đứng trước.
+
 
 | | **A · Stage SepFormer 3mix** | **B · Chuyển sang TS-ASR (DiCoW)** |
 |---|---|---|
 | Bản chất | Bổ sung separator 3 nguồn cho đường hiện tại | Bỏ hẳn khâu tách nguồn và gán nguồn |
-| Giải quyết | Giới hạn 2 (ba người đồng thời) | Cả giới hạn 1 và 2 |
+| Giải quyết | Chỉ mục 6.1.3 (ba người đồng thời) | Cả 6.1.1, 6.1.2 và 6.1.3 — bỏ luôn khâu linking nên không còn câu hỏi ngưỡng |
 | Việc phải làm | `prestage_models.py` cho `sepformer_libri3mix`, rà licence (`beta_only`, `revision: null`), bật `three_source_beta`, nâng `max_supported_concurrent_speakers: 3`, benchmark | Manifest + adapter mới, rà licence, wiring port ASR, một lượt decode mỗi người |
 | Rủi ro | SepFormer libri3mix là 8 kHz, phải resample; chất lượng trên tiếng Việt chưa biết | Thay đổi kiến trúc lớn nhất; chất lượng phụ thuộc mạnh vào diarization |
 | Chi phí T4 | Thêm một model thường trú; VRAM hiện chỉ còn ~1–2 GB mỗi GPU | Backbone whisper-large-v3-turbo, fp16; N lượt decode cho N người |
 | Giữ được gì | Toàn bộ pipeline hiện tại | Diarization giữ nguyên; separation + linking thành code chết |
 
-### 6.3 Điều kiện chung cho cả hai
+### 6.3 Điều kiện chung cho cả hai — nay đã có thước đo
 
-Cả A lẫn B đều **không nghiệm thu được nếu không có bộ dữ liệu có nhãn**. Đo đạc
-ngày 18/08 cho thấy hai cơ chế gán nguồn độc lập chỉ đồng thuận 3/6 trên bài toán
-nhị phân — đúng mức ngẫu nhiên — nên hiện không có cách nào so sánh A với B, hay
-so sánh bất kỳ phương án nào với hiện trạng, ngoài việc đếm số segment có tên.
-Đếm số lượng không phải đo độ chính xác.
+Cả A lẫn B vẫn **không nghiệm thu được nếu không có dữ liệu có nhãn**, nhưng công
+cụ để tạo và dùng dữ liệu đó đã có (chế độ gán nhãn trong `web/`,
+`deploy/overlap_eval.py`). Số đo đầu tiên đã đổi thứ tự ưu tiên:
 
-Vì lý do đó `source_linking.short_source_policy` vẫn mặc định `unknown`: bật
-`diarization_constrained` làm `Unknown` giảm 34 → 16 trên file mẫu, nhưng không
-có gì chứng minh 19 cái tên mới là đúng.
+- Baseline trên nhãn tay cho **đúng 0% · nhầm 28.6% · `Unknown` 71.4%** (n=7).
+  Hai dòng sai đến từ **một** quyết định hoán vị sai, không phải hai lỗi độc lập.
+- Mọi vùng dưới 1000 ms đều `Unknown`; mọi vùng ≥1000 ms đều bị gán sai.
+- `padded` — nới cửa sổ embedding — đưa số vùng vượt mốc từ 3/15 lên 10/15 nhưng
+  **không đổi một dòng nào** trong tập đã gán nhãn, và sinh thêm một speaker thứ
+  năm trong phiên chỉ có ba người. Vì vậy nó ship ở trạng thái tắt.
 
-**Việc cần làm trước tiên, bất kể chọn A hay B:** 20–30 phút audio cùng miền, gán
-nhãn ai nói câu nào trong vùng overlap. Xem mục 10 để biết vị trí của nó trong
-danh sách nợ.
+`source_linking.short_source_policy` vẫn mặc định `unknown`: bật
+`diarization_constrained` làm `Unknown` giảm 34 → 16 trên file mẫu, nhưng chưa có
+gì chứng minh 19 cái tên mới là đúng. Nhánh đó cũng chỉ kích hoạt khi
+`active_clusters == embedded`, nên trước khi có embedding cho vùng ngắn thì nó trơ.
+
+**Việc cần làm trước tiên, bất kể chọn A hay B:** gán nhãn 20–30 phút audio cùng
+miền. Đã gán 8/47 segment trên một file 20 phút; phần còn lại là việc tay.
+
+### 6.4 Thứ tự đã đổi sau khi có số
+
+Trước 19/08 mục này chờ quyết định A/B. Số đo cho thấy hai khâu **đứng trước** cả
+A lẫn B, và cả hai đều rẻ hơn nhiều:
+
+| Ưu tiên | Việc | Vì sao trước A/B |
+|---|---|---|
+| 1 | Gán nhãn nốt, đo lại | 7 mẫu không kết luận được tỉ lệ; chưa biết vụ đảo người là ngẫu nhiên hay hệ thống |
+| 2 | Calibration release thật cho `accept_threshold`/`ambiguous_margin` | Hai con số đang chặn cả những nguồn đã embed được |
+| 3 | A hoặc B | Chỉ giải quyết phần còn lại sau khi hai việc trên xong |
+
+Nếu vụ đảo người hoá ra **hệ thống**, đó là tin tốt: sửa một hoán vị rẻ hơn nhiều
+so với thay separator hay đổi kiến trúc.
 
 ## 7. Fullstack — hạ tầng đã chạy thật (spec 10, 11.1, 11.3)
 
@@ -529,6 +552,10 @@ Chạy trên fake adapters, không tải weights:
 - `sastt.adapters.speechbrain.SepFormerLibri3MixSeparator` là adapter beta K=3, yêu cầu thư mục weight local và `three_source_beta`; không tải model ở runtime.
 - `FileConfidenceCalibrator` chỉ xuất confidence khi có release JSON hợp lệ; chưa cấu hình release thì vẫn null/fail-closed.
 - `deploy/benchmark_report.py`, `deploy/capacity_report.py`, `deploy/generate_sbom.py` tạo evidence local. Report capacity đánh dấu `pending` khi thiếu sample, không tự xác nhận SLO.
+- `GET /v1/jobs/{id}/audio` trả input gốc của job để nghe lại một segment; `?preview=1` trả bản Opus mono 16 kHz (20 phút: 15.9 MB → 3.5 MB, lệch thời gian 0.0 ms). Giữ 12 job gần nhất, xoá cùng job.
+- Chế độ gán nhãn trong `web/`: nghe giọng mẫu từng người, gán từng dòng overlap bằng phím; ba đáp án không phải tên người (`n` phát hiện overlap sai, `l` tách nguồn rò, `0` không nghe ra) trỏ vào ba khâu khác nhau.
+- `deploy/overlap_eval.py` chấm điểm gán người nói trong vùng overlap so với nhãn tay. Luôn trả bộ ba đúng/nhầm/`Unknown`; so sánh hai lượt chạy sau khi gióng roster bằng thời lượng nói ngoài overlap.
+- `source_linking.embedding_window: owned | padded` — mặc định `owned`, không đổi hành vi. Xem mục 6.
 
 Ví dụ:
 

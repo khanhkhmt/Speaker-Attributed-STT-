@@ -148,10 +148,11 @@ pytest -m model -q
 Model smoke pass không phải benchmark accuracy; benchmark corpus, calibration và
 load evidence là các gate riêng.
 
-Lần kiểm tra mã gần nhất (19/08/2026): `ruff check`, format, `mypy` và `pytest -q`
-đều pass (**297 passed, 59 deselected**); `pytest -m model` **34 passed** trên
-weight thật (18/08). `pytest -m db` **21 passed** trên PostgreSQL + Redis thật
-(18/08); máy kiểm tra ngày 19/08 không có Postgres/Redis nên gate đó chưa chạy lại.
+Lần kiểm tra mã gần nhất (19/08/2026): `ruff check`, format, `mypy` (62 file) và
+`pytest -q` đều pass (**303 passed, 59 deselected**). `pytest -m model`
+**34 passed** trên weight thật và `pytest -m db` **21 passed** trên PostgreSQL +
+Redis thật, cả hai đo ngày 18/08; máy ngày 19/08 không có Postgres/Redis nên gate
+`db` chưa chạy lại.
 
 ## 5. Chạy nhanh giao diện development (fake engine)
 
@@ -632,17 +633,28 @@ Thiếu đo đạc thì capacity report phải ở `pending`; không thay nó b�
   ứng.
 - Voice Registry trong API hiện là local/in-memory; persistent pgvector cần
   wiring/auth phù hợp trước triển khai nhiều replica.
+- **Gán người nói trong vùng chồng tiếng chưa dùng được cho sản phẩm.** Baseline
+  đo trên nhãn tay của một file 20 phút: **đúng 0% · nhầm 28.6% · `Unknown`
+  71.4%** trên 7 dòng quyết định được. Mẫu quá nhỏ để kết luận tỉ lệ, nhưng đủ để
+  nói rằng phần ngoài overlap chạy tốt còn phần overlap thì chưa. Cách đo lại nằm
+  ở §10.2–10.3.
 - `source_linking.short_source_policy: diarization_constrained` **chưa được
   nghiệm thu trên dữ liệu có nhãn**. Bật nó là đánh đổi `Unknown` trung thực lấy
   rủi ro gán sai tên một cách tự tin. Giữ `unknown` cho đến khi có bộ đánh giá.
+- `source_linking.embedding_window: padded` cũng **chưa nghiệm thu**. Nó đưa số
+  vùng vượt mốc embedding từ 3/15 lên 10/15, nhưng không đổi dòng nào trong tập đã
+  gán nhãn và sinh thêm một speaker thứ năm trong phiên ba người. Xem §10.4.
 - **Ba người nói cùng lúc chưa tách được.** Bộ đếm nay báo đúng K=3 và router trả
   `MIXTURE_ASR_UNSUPPORTED` kèm cảnh báo `unsupported_concurrency` — vùng đó có
   transcript mixture nhưng không phân theo người. MossFormer2 chỉ tách 2 nguồn và
-  weight 3 nguồn chưa được stage. Hướng xử lý đang chờ quyết định:
+  weight 3 nguồn chưa được stage. Việc chọn separator 3 nguồn hay chuyển sang
+  TS-ASR **không còn là bước kế tiếp** — hai việc rẻ hơn đứng trước nó, xem
   [`implementation-status.md` mục 6](implementation-status.md).
-- **Đoạn overlap ngắn vẫn ra `Unknown`.** Dưới 500 ms embedding người nói không
-  còn mang thông tin định danh (đo tại `implementation-status.md` mục 5), nên đây
-  là giới hạn thông tin chứ không phải cấu hình sai.
+- **Đoạn overlap ngắn vẫn ra `Unknown`.** Nguyên nhân trội không phải embedding
+  nhiễu mà là **không có embedding nào**: mốc tối thiểu 1500 ms trong khi trung vị
+  vùng overlap là 660 ms, nên adapter từ chối tạo vector. Giới hạn thông tin dưới
+  500 ms vẫn có thật nhưng nằm sau chỗ pipeline dừng. Chi tiết và số đo ở
+  [`implementation-status.md` mục 6](implementation-status.md).
 
 ## 13.1 Ngôn ngữ ASR (`asr.language_detection`)
 
