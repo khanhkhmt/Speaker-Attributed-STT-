@@ -11,7 +11,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from sastt.api.http import create_app
+from sastt.api.http import (
+    MAX_RETAINED_JOB_AUDIO,
+    audio_media_type,
+    create_app,
+    load_demo_scenario,
+    scenario_wav,
+)
 from sastt.api.schemas import validate_segment_v2, validate_server_event
 from sastt.config import Environment
 from sastt.domain.errors import ConfigurationError
@@ -50,6 +56,30 @@ class TestProbes:
         assert "Voxlane" in page.text
         assert "Voice Registry" in page.text
         assert "Near-realtime" in page.text
+
+    def test_console_can_play_a_segment_back(self, client: TestClient) -> None:
+        """A transcript row carries its own time span so a click can seek to it."""
+        page = client.get("/").text
+        assert 'id="au"' in page
+        assert "data-start='" in page and "data-end='" in page
+        assert "function playSegment(" in page
+
+    def test_console_can_label_overlap_segments(self, client: TestClient) -> None:
+        """Task 0.1: overlap attribution cannot be measured without hand labels."""
+        page = client.get("/").text
+        assert 'id="labelbar"' in page
+        assert "function labelExport(" in page
+        assert "undecidable" in page
+
+    def test_console_offers_a_voice_reference_per_speaker(self, client: TestClient) -> None:
+        """A labeller cannot answer "which of these is Speaker 2" without hearing Speaker 2."""
+        page = client.get("/").text
+        assert "function labelReference(" in page
+        assert "data-ref=" in page
+
+    def test_console_is_revalidated_rather_than_served_stale(self, client: TestClient) -> None:
+        """The console has no build step or hashed URL, so it must not be cached blind."""
+        assert client.get("/").headers["cache-control"] == "no-cache"
 
     def test_production_refuses_the_dev_auth_stub(self) -> None:
         """Spec 14.2: the tenant must come from auth claims, not a header."""
@@ -165,6 +195,95 @@ class TestOfflineJobs:
         denied = client.get(f"/v1/jobs/{created['job_id']}", headers={"X-Tenant-Id": "tenant_b"})
         assert denied.status_code == 400
         assert denied.json()["error_code"] == "TENANT_ACCESS_DENIED"
+
+    def test_job_audio_returns_the_exact_input_it_was_cut_from(self, client: TestClient) -> None:
+        """Playback must be the job's own input, not a re-render (spec 18 rule 6)."""
+        created = client.post(
+            "/v1/jobs",
+            json={"scenario": "s02_two_speaker_overlap"},
+            headers={"Idempotency-Key": "audio-playback"},
+        ).json()
+
+        response = client.get(f"/v1/jobs/{created['job_id']}/audio")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("audio/wav")
+        assert response.headers["cache-control"] == "private, no-store"
+        assert response.content == scenario_wav(load_demo_scenario("s02_two_speaker_overlap"))
+
+    def test_audio_preview_is_smaller_and_leaves_the_original_untouched(
+        self, client: TestClient
+    ) -> None:
+        """A console reached over a tunnel cannot wait for the raw upload."""
+        created = client.post(
+            "/v1/jobs",
+            json={"scenario": "s02_two_speaker_overlap"},
+            headers={"Idempotency-Key": "audio-preview"},
+        ).json()
+        exact = client.get(f"/v1/jobs/{created['job_id']}/audio")
+
+        preview = client.get(f"/v1/jobs/{created['job_id']}/audio", params={"preview": "1"})
+
+        assert preview.status_code == 200
+        if preview.headers["content-type"].startswith("audio/ogg"):
+            assert len(preview.content) < len(exact.content)
+        else:  # pragma: no cover - build without libopus falls back, never fails
+            assert preview.content == exact.content
+        # The flag must not change what the unflagged endpoint returns.
+        assert client.get(f"/v1/jobs/{created['job_id']}/audio").content == exact.content
+
+    def test_job_audio_is_tenant_scoped(self, client: TestClient) -> None:
+        created = client.post(
+            "/v1/jobs",
+            json={"scenario": "s02_two_speaker_overlap"},
+            headers={"Idempotency-Key": "audio-tenant", "X-Tenant-Id": "tenant_a"},
+        ).json()
+
+        denied = client.get(
+            f"/v1/jobs/{created['job_id']}/audio", headers={"X-Tenant-Id": "tenant_b"}
+        )
+
+        assert denied.status_code == 400
+        assert denied.json()["error_code"] == "TENANT_ACCESS_DENIED"
+
+    def test_deleting_a_job_takes_its_audio_with_it(self, client: TestClient) -> None:
+        """Spec 14.4: deletion must reach the retained recording, not just the result."""
+        created = client.post(
+            "/v1/jobs",
+            json={"scenario": "s02_two_speaker_overlap"},
+            headers={"Idempotency-Key": "audio-deleted"},
+        ).json()
+        assert client.get(f"/v1/jobs/{created['job_id']}/audio").status_code == 200
+
+        client.delete(f"/v1/jobs/{created['job_id']}")
+
+        assert client.get(f"/v1/jobs/{created['job_id']}/audio").status_code == 404
+
+    def test_retained_audio_is_bounded_in_memory(self) -> None:
+        """Raw audio must not accumulate unbounded in the development process."""
+        app = create_app()
+        bounded = TestClient(app)
+        job_ids = [
+            bounded.post(
+                "/v1/jobs",
+                json={"scenario": "s02_two_speaker_overlap"},
+                headers={"Idempotency-Key": f"audio-bound-{index}"},
+            ).json()["job_id"]
+            for index in range(MAX_RETAINED_JOB_AUDIO + 2)
+        ]
+
+        assert len(app.state.sastt.job_audio_keys) == MAX_RETAINED_JOB_AUDIO
+        assert bounded.get(f"/v1/jobs/{job_ids[0]}/audio").status_code == 404
+        assert bounded.get(f"/v1/jobs/{job_ids[-1]}/audio").status_code == 200
+
+    def test_audio_media_type_is_sniffed_not_assumed(self) -> None:
+        """The upload arrives as opaque bytes; an unknown container says so."""
+        assert audio_media_type(b"RIFF\x00\x00\x00\x00WAVE") == "audio/wav"
+        assert audio_media_type(b"fLaC\x00") == "audio/flac"
+        assert audio_media_type(b"OggS\x00") == "audio/ogg"
+        assert audio_media_type(b"ID3\x04") == "audio/mpeg"
+        assert audio_media_type(b"\x00\x00\x00\x20ftypM4A ") == "audio/mp4"
+        assert audio_media_type(b"nothing recognisable") == "application/octet-stream"
 
 
 class TestVoiceRegistry:

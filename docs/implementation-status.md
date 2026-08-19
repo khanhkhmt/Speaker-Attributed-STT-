@@ -2,7 +2,7 @@
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Cập nhật | 18/08/2026 |
+| Cập nhật | 19/08/2026 |
 | Spec tham chiếu | [`production-technical-spec.md`](production-technical-spec.md) v1.0 |
 | Milestone hiện tại | M0 xong · M1 **xong** · **M2 ~85%** · **M3 ~60%** · **M4 ~45%** · **M5 ~30%** — phần còn lại là gate cần model/GPU/corpus thật |
 | Engine mặc định | `fake` (M0). Đặt `SASTT_ENGINE=real` để dùng adapter model thật |
@@ -27,8 +27,8 @@ thật, không ước lượng.
 |---|---|---|
 | Lint | `ruff check src tests deploy` | pass |
 | Format | `ruff format --check src tests deploy` | pass |
-| Type | `mypy` (strict) | pass, 61 source file |
-| Test thường | `pytest` | **278 passed**, 59 deselected (lần kiểm tra 18/08/2026; không gộp model/load/db) |
+| Type | `mypy` (strict) | pass, 62 source file |
+| Test thường | `pytest` | **297 passed**, 59 deselected (lần kiểm tra 19/08/2026; không gộp model/load/db) |
 | Test model | `pytest -m model` | **34 passed, 0 skipped** |
 | Test hạ tầng | `pytest -m db` | **21 passed** (Postgres + Redis thật) |
 | Coverage | `--cov=sastt.domain --cov=sastt.application` | 88% (spec 16.3 yêu cầu ≥85%) |
@@ -70,6 +70,114 @@ Gỡ blocker này làm lộ 3 lỗi thật mà đường fake không thể phát
 | OSD chuyển đổi powerset | `mat1 and mat2 shapes cannot be multiplied (2356x3 and 7x3)` | `Inference` tự convert powerset→multilabel (hard) trước khi adapter tự convert soft; thiếu `skip_conversion=True` |
 | OSD gộp chunk | timestamp phồng lên ~20× (overlap 2.5–5 s bị báo 146–292 s) | pyannote chỉ overlap-add *sau* convert; với `skip_conversion` phải tự `Inference.aggregate` theo `model.receptive_field`, nếu không output per-chunk bị đọc phẳng thành timeline 1 s/frame |
 | Merge nhầm 2 người | hai nguồn của cùng vùng overlap bị gán chung một `session_speaker_id` | source bị reject tạo temporary ID nhưng không có cannot-link với source kia cùng crop, nên reconciliation gộp lại (spec 5.6, 5.8.7) |
+
+### Cập nhật 19/08/2026 — chẩn đoán lại vùng overlap, và dựng thước đo
+
+Đo trên một upload thật 20 phút tiếng Việt 3 người (`job_01M0C5CA41JJAFY2QSWKZFQ010`,
+`SASTT_ENGINE=real`): 319 segment, 271 segment không overlap **đều có tên** trên
+đúng 3 người, còn 48 segment overlap thì **41 ra `Unknown` (85%)**. Segment gán
+được tên có trung vị 1080 ms, segment `Unknown` có trung vị 480 ms.
+
+**Nguyên nhân trội không phải cosine nhiễu — phần lớn nguồn chưa từng được embed.**
+`linking_minimum_speech_ms` mặc định rơi về `speaker_embedding.minimum_clean_speech_seconds`
+= 1500 ms, trong khi trung vị một vùng overlap trên file đó là 660 ms. Adapter ném
+`InsufficientSpeechForEmbeddingError`, `embed_buffer` trả `None`, và không có
+vector nào để đưa vào Hungarian. Chẩn đoán cũ ở mục 6.1 ("dưới 500 ms embedding là
+nhiễu") mô tả một hiện tượng có thật nhưng nằm *sau* chỗ pipeline dừng lại.
+
+Đáng chú ý hơn: separation đã chạy trên cửa sổ `region ± audio.overlap_context_seconds`
+(0.5 s mỗi phía), nhưng `separate_and_link` gọi `embed_buffer(source, owned)` — đúng
+lõi vùng — nên phần đệm bị cắt trước khi vào CAM++. Audio cần thiết đã được tính
+rồi và bị bỏ đi. Đo trên 15 vùng overlap đã tách của file đó:
+
+| Cửa sổ dùng để embed | Vùng đạt mốc 1500 ms |
+|---|---|
+| `owned` — lõi vùng (hiện tại) | 3/15 = 20% |
+| `padded` — cả cửa sổ đã tách | 10/15 = 67% |
+
+**Một tương tác chưa ai ghi:** `short_source_policy: diarization_constrained` chỉ
+kích hoạt khi `active_clusters == embedded`. Với vùng ngắn thì `embedded = 0`, nên
+nhánh đó trơ đúng ở chỗ cần nó nhất. Nới cửa sổ embedding là điều kiện cần để nó
+có tác dụng, không phải phương án thay thế.
+
+#### Đã bổ sung
+
+| Artefact | Vai trò |
+|---|---|
+| `source_linking.embedding_window: owned \| padded` | Cờ config, **mặc định `owned`** (không đổi hành vi). `padded` embed cả cửa sổ đã tách. ASR vẫn chỉ đọc `owned` — bất biến này có test — nhưng transcript cuối *không* bất biến: danh tính quyết định cách gom từ thành utterance, nên ranh giới segment dịch theo. Chưa nghiệm thu. |
+| `deploy/overlap_eval.py` | Chấm điểm gán người nói trong vùng overlap so với nhãn tay. Luôn trả **bộ ba** đúng/nhầm/`Unknown`, ánh xạ session speaker ID sang nhãn bằng Hungarian một-một. Chế độ so sánh chỉ báo "cải thiện" khi đúng tăng **và** nhầm không tăng. |
+| Chế độ gán nhãn trong `web/` | Bấm dòng overlap → nghe → phím `1..9` gán người, `0` = không nghe ra, tự nhảy sang dòng chưa gán. Xuất JSON đúng định dạng `overlap_eval.py` đọc. |
+| `GET /v1/jobs/{id}/audio` | Trả input gốc của job để nghe lại từng segment. Giữ 12 job gần nhất, `DELETE` xóa kèm. |
+
+#### Phép thử `padded` trên file 20 phút — kết quả KHÔNG ủng hộ việc bật
+
+Chạy hai lượt trên cùng file, cùng ngưỡng `0.55/0.10`, chỉ khác `embedding_window`:
+
+| | `owned` | `padded` |
+|---|---:|---:|
+| Nguồn overlap có cosine để so | 7 | **13** |
+| Segment overlap có tên | 7 | 11 |
+| Segment overlap `Unknown` | 42 (86%) | 38 (78%) |
+| **Số session speaker riêng biệt** | 4 | **5** |
+
+Cơ chế hoạt động đúng như dự đoán: gần gấp đôi số nguồn sinh được embedding. Nhưng
+hai quan sát sau là lý do **không** được bật nó:
+
+1. **Roster phình lên.** File có 3 người, `estimated_session_speakers = 3`, nhưng
+   `padded` sinh ra `Speaker 5` cho 2 segment. Nhiều embedding hơn nghĩa là nhiều
+   nguồn đủ điều kiện tạo temporary speaker hơn, và temporary nào không
+   reconcile được thì đọng lại thành một người không có thật.
+2. **Hai lượt gán tên khác nhau cho cùng một segment.** Ở 399411 ms và 400931 ms,
+   `owned` nói `Speaker 1` (cos 0.455), `padded` nói `Speaker 5` (cos 0.471). Cả
+   hai đều dưới ngưỡng 0.55. Ít nhất một trong hai phải sai, và không có nhãn thì
+   không biết cái nào — đúng tình huống mục 6.3 mô tả.
+
+Ngoài ra 6 nguồn mới có cosine nhưng chỉ 4 segment thêm tên: ngưỡng chấp nhận
+(chưa hiệu chỉnh) nay là chỗ nghẽn tiếp theo, không còn là mốc embedding.
+
+Kết luận: giữ `owned`. `padded` chỉ được xét lại sau khi có bộ nhãn và một
+calibration release thật.
+
+#### Baseline đầu tiên trên nhãn tay (19/08, n nhỏ)
+
+8 segment overlap được gán nhãn tay trên `job_01M0CC9VVA5518QJ1ETJQX6Q4E` (1 nhãn
+là "không nghe ra", còn 7 quyết định được):
+
+| | đúng | nhầm | `Unknown` |
+|---|---:|---:|---:|
+| Tổng (n=7) | **0%** | **28.6%** | 71.4% |
+| vùng < 1000 ms (n=5) | 0% | 0% | 100% |
+| vùng ≥ 1000 ms (n=2) | 0% | 100% | 0% |
+
+Hai segment duy nhất pipeline dám đặt tên đều **đảo hai người**: cùng vùng
+107811 ms, source 0 được gán `Speaker 1` trong khi người nghe nói đó là
+`Speaker 2`, và ngược lại. Hai dòng sai đến từ **một** quyết định hoán vị sai của
+Hungarian, không phải hai lỗi độc lập.
+
+Vùng dưới 1000 ms: 5/5 ra `Unknown`, đúng như chẩn đoán mốc embedding.
+
+`padded` không đổi một dòng nào trong tập đã gán nhãn — 4 cái tên thêm của nó rơi
+vào các segment chưa được gán.
+
+**Lỗi trong chính công cụ đo, đã sửa.** Bản đầu của `overlap_eval.py` ánh xạ
+speaker dự đoán sang nhãn bằng Hungarian tự do theo chuẩn đánh giá diarization.
+Nhưng nhãn ở đây được viết bằng từ vựng roster của chính lượt chạy — người gán
+nhãn nghe `Speaker 2` ở đoạn sạch rồi nói nguồn overlap là người đó. Với ánh xạ
+tự do, một vụ đảo hai người nhất quán được đổi tên thành điểm tuyệt đối: công cụ
+báo **đúng 28.6%, nhầm 0%** thay vì **đúng 0%, nhầm 28.6%**. Nay so sánh theo
+danh tính; lượt chạy thứ hai được gióng roster bằng thời lượng nói ở vùng **không
+overlap** — mốc neo độc lập với thứ đang được chấm. Có test khoá lại.
+
+**Cảnh báo về quy mô:** 7 mẫu, 2 dòng sai đến từ 1 quyết định. Đây là mẫu thí
+điểm, không phải bằng chứng về tỉ lệ. Điều nó đã làm được là lật ngược một kết
+luận và lộ ra một lỗi trong thước đo — đúng việc của một mẻ thí điểm.
+
+**Chưa nghiệm thu, và đây là điều quan trọng nhất của mục này:** `padded` mới chỉ
+được chứng minh là *sinh ra embedding*, chưa được chứng minh là *gán đúng người*.
+Phần đệm nằm ở vùng không chồng tiếng — nếu separator để lọt một giọng vào cả hai
+nguồn thì embedding bị nhiễm chéo, và số nguồn vượt mốc tăng lên trong khi tên gán
+lại sai. Vượt mốc không phải bằng chứng của một liên kết đúng (spec 18 rule 7).
+Muốn kết luận thì phải có bộ nhãn — đó là lý do hai artefact còn lại tồn tại.
 
 ### Cập nhật 18/08/2026 (b) — bộ đếm người đồng thời được nạp bằng chứng
 
@@ -264,9 +372,13 @@ Sau các thay đổi ngày 18/08, vùng overlap vẫn còn hai giới hạn mà 
 nào gỡ được:
 
 1. **Đoạn ngắn không định danh được.** Trên file 15 phút, 34/41 segment overlap
-   vẫn `Unknown`; trên file 3 người 20 phút là 43/50. Nguyên nhân đã đo: dưới
-   500 ms embedding người nói là nhiễu (mục 5). Đây là giới hạn thông tin, không
-   phải giới hạn của CAM++.
+   vẫn `Unknown`; trên file 3 người 20 phút là 43/50.
+   **Chẩn đoán này đã được sửa ngày 19/08 — xem cập nhật bên dưới.** Bản cũ ghi
+   nguyên nhân là "dưới 500 ms embedding là nhiễu", nhưng phần lớn nguồn ngắn
+   chưa từng được embed: mốc tối thiểu là 1500 ms còn trung vị vùng overlap là
+   660 ms, nên adapter trả `InsufficientSpeechForEmbeddingError` và không có
+   vector nào để so. Giới hạn thông tin ở mục 5 vẫn đúng cho vùng thực sự ngắn,
+   nhưng nó không phải nguyên nhân trội.
 2. **Ba người nói cùng lúc không tách được.** Bộ đếm nay báo đúng K=3 và router
    trả `MIXTURE_ASR_UNSUPPORTED` — trung thực, nhưng vẫn là không có transcript
    phân theo người cho vùng đó. MossFormer2 chỉ tách 2 nguồn.

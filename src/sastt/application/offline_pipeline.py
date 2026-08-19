@@ -576,19 +576,30 @@ class OfflinePipeline:
             embeddings: list[SpeakerEmbedding | None] = []
             source_asr_buffers: list[AudioBuffer] = []
             source_speech: list[list[TimeInterval]] = []
+            embed_padded = self.config.source_linking.embedding_window == "padded"
             for index in range(batch.source_count):
                 source = _source_buffer(batch, index, crop)
                 asr_buffer = source.crop_ms(owned) if owned.duration_ms > 0 else source
                 speech = self.adapters.vad.detect(asr_buffer, ctx.child("vad"))
                 source_asr_buffers.append(asr_buffer)
                 source_speech.append(speech)
+                # ASR always stays inside `owned`: the padding belongs to the
+                # neighbouring non-overlap segments and its text is theirs.
+                # Identity is a different question — it may use the whole
+                # separated window, which the separator has already produced.
+                if embed_padded and owned.duration_ms > 0 and window != owned:
+                    embed_interval = window
+                    embed_speech = self.adapters.vad.detect(source, ctx.child("vad"))
+                else:
+                    embed_interval = owned
+                    embed_speech = speech
                 embeddings.append(
                     self.embed_buffer(
                         source,
-                        owned,
+                        embed_interval,
                         ctx,
                         source_track=index,
-                        speech_intervals=speech,
+                        speech_intervals=embed_speech,
                         minimum_speech_ms=self.linking_minimum_speech_ms,
                     )
                 )

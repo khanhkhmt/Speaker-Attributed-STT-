@@ -217,6 +217,22 @@ class SourceLinkingConfig(_Base):
     #: honest ``Unknown`` for a risk of confident misattribution (spec 18 rule 7).
     short_source_policy: Literal["unknown", "diarization_constrained"] = "unknown"
 
+    #: Which slice of a separated source is embedded for linking.
+    #:
+    #: Separation already runs on the overlap region padded by
+    #: ``audio.overlap_context_seconds`` on each side, but ``owned`` embeds only
+    #: the region itself — so a region shorter than the embedding floor produces
+    #: no vector at all and the source can only be ``Unknown``. ``padded`` embeds
+    #: the whole separated window instead, which is audio the separator has
+    #: already produced and currently discards.
+    #:
+    #: ``padded`` is NOT validated against labelled overlap audio. The padding
+    #: covers non-overlap speech, so a separator that leaks one voice into both
+    #: sources would contaminate the embedding — more sources would clear the
+    #: floor while being attributed to the wrong speaker. Clearing the floor is
+    #: not evidence of a correct link (spec 18 rule 7).
+    embedding_window: Literal["owned", "padded"] = "owned"
+
     @property
     def is_calibrated(self) -> bool:
         return self.accept_threshold is not None and self.ambiguous_margin is not None

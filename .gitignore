@@ -16,3 +16,6 @@ htmlcov/
 build/
 dist/
 .venv/
+
+# Console exports (job results, hand labels): evidence from a local run, not source.
+/voxlane-*.json

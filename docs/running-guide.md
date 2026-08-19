@@ -148,9 +148,10 @@ pytest -m model -q
 Model smoke pass không phải benchmark accuracy; benchmark corpus, calibration và
 load evidence là các gate riêng.
 
-Lần kiểm tra mã gần nhất (18/08/2026): `ruff check`, format, `mypy` và `pytest -q`
-đều pass (**278 passed, 59 deselected**); `pytest -m model` **34 passed** trên
-weight thật, `pytest -m db` **21 passed** trên PostgreSQL + Redis thật.
+Lần kiểm tra mã gần nhất (19/08/2026): `ruff check`, format, `mypy` và `pytest -q`
+đều pass (**297 passed, 59 deselected**); `pytest -m model` **34 passed** trên
+weight thật (18/08). `pytest -m db` **21 passed** trên PostgreSQL + Redis thật
+(18/08); máy kiểm tra ngày 19/08 không có Postgres/Redis nên gate đó chưa chạy lại.
 
 ## 5. Chạy nhanh giao diện development (fake engine)
 
@@ -420,6 +421,7 @@ dùng thường xuyên:
 | `POST` | `/v1/jobs` | Tạo job; bắt buộc `Idempotency-Key` |
 | `GET` | `/v1/jobs/{job_id}` | State/warning/error job |
 | `GET` | `/v1/jobs/{job_id}/result` | Kết quả final v2 |
+| `GET` | `/v1/jobs/{job_id}/audio` | Audio input của job, để nghe lại một segment |
 | `DELETE` | `/v1/jobs/{job_id}` | Hủy job chưa terminal hoặc xóa artifact local theo state API |
 | `POST` | `/v1/sessions` | Tạo session realtime/WebSocket development |
 | `POST` | `/v1/sessions/{session_id}/finalize` | Finalize session |
@@ -428,6 +430,123 @@ dùng thường xuyên:
 Trang web cache JavaScript trong browser. Sau khi deploy thay đổi
 `web/index.html`, dùng hard refresh (`Ctrl+Shift+R` hoặc `Cmd+Shift+R`) trước
 khi kiểm tra UI mới.
+
+### 10.1 Nghe lại một segment
+
+Bấm vào một dòng transcript để nghe đúng khoảng `start_ms`–`end_ms` của dòng đó.
+Thanh player có hai chế độ: *Chỉ đoạn đã bấm* dừng ở cuối segment, *Phát liên
+tục* chạy tiếp và tự highlight dòng đang phát.
+
+Audio phát ra là **input gốc của job**, không phải nguồn đã tách. Một nguồn tách
+là sản phẩm của model; phát nó như thể đó là bản ghi sẽ trình bày sai việc
+pipeline đã làm. Vì vậy vùng overlap sẽ nghe thấy cả hai người cùng lúc — đó là
+đúng, và là cách kiểm tra bằng tai xem việc gán nguồn có hợp lý không.
+
+Console giữ audio của **12 job gần nhất** (`MAX_RETAINED_JOB_AUDIO`). Cũ hơn
+mức đó, hoặc sau khi restart API ở chế độ đơn tiến trình, endpoint trả `404` và
+player ghi rõ audio không còn được giữ — chạy lại job nếu cần nghe. `DELETE
+/v1/jobs/{job_id}` xóa luôn audio đã giữ.
+
+Audio thô là dữ liệu sinh trắc (spec 10.3, 14.4). Bound ở trên chỉ chặn RAM của
+môi trường development; deployment thật giữ audio trong object storage theo
+retention policy chứ không giữ trong tiến trình API.
+
+### 10.2 Gán nhãn vùng chồng tiếng
+
+Vùng overlap là chỗ duy nhất pipeline đang hỏng, và không thể cải thiện nó nếu
+không phân biệt được một *cái tên đúng* với một *cái tên*. Console có chế độ gán
+nhãn để tạo bộ đối chứng đó.
+
+1. Mở một job đã xong, bấm **◐ Gán nhãn** ở thanh công cụ transcript.
+2. Đặt bộ lọc về **Chỉ đồng thời** để chỉ thấy các dòng cần gán.
+3. Bấm **♪** cạnh mỗi tên để nghe giọng mẫu của người đó — 5 giây đầu của đoạn
+   nói sạch dài nhất mà họ có trong phiên. Đây là cách biết `Speaker 2` là ai
+   trước khi gán. Rê chuột lên tên sẽ thấy câu họ nói trong đoạn mẫu đó.
+4. Bấm một dòng → nó phát đúng đoạn audio đó.
+5. Gõ `1`…`9` để gán người tương ứng, hoặc `0` nếu **không nghe ra ai nói**.
+6. Sau mỗi lần gán, con trỏ tự nhảy sang dòng chưa gán kế tiếp và phát luôn.
+
+| Phím | Tác dụng |
+|---|---|
+| `1`–`9` | Gán người nói thứ n |
+| `n` | Vùng này thực ra chỉ có **một** người nói |
+| `l` | Dòng này lẫn chữ của **hai** người — luồng tách bị rò |
+| `0` | Không nghe ra — không tính vào điểm số |
+| `Shift`+`1`–`9` | Nghe lại giọng mẫu của người thứ n |
+| `Space` | Nghe lại dòng hiện tại |
+| `↑` `↓` hoặc `k` `j` | Dòng trước / dòng sau |
+
+Nhãn lưu trong `localStorage` theo `job_id`, nên đóng tab không mất. Bấm **Xuất
+nhãn** để tải file JSON.
+
+#### Nguyên tắc gán
+
+Mỗi dòng là **một luồng đã tách**, không phải một khoảng thời gian. Separator cắt
+vùng chồng tiếng thành hai luồng và chép lời riêng từng luồng, nên câu hỏi là:
+
+> **Ai đã nói câu hiển thị ở dòng này?**
+
+Không phải "trong khoảng này ai nói nhiều hơn". Anh không nghe được luồng đã tách
+— player cố tình phát audio gốc — nên **cột Nội dung là thứ xác định dòng đó là
+luồng nào**. Nghe đoạn audio, rồi gán câu chữ đó cho giọng mình nghe ra.
+
+Vài chữ ở mép đoạn rơi vào chỗ chồng tiếng là bình thường và **không** đổi câu
+trả lời: một luồng tách ra vốn phải chở đúng một người xuyên suốt vùng đó.
+
+Trong thực tế hai giọng đồng thời là hai người khác nhau — nhưng đó là *thực tế*,
+không phải *đầu ra của separator*. Separator hoàn toàn có thể nhét cùng một người
+vào cả hai luồng. Nếu nghe kỹ mà thấy cả hai dòng đều là một giọng, hãy gán **cùng
+một tên cho cả hai**: đó là câu trả lời trung thực, và nó ghi lại một lỗi tách
+nguồn thay vì che đi.
+
+Bốn câu trả lời không phải tên người, mỗi cái đo một tầng khác nhau của pipeline:
+
+| | Nghĩa | Nó đo cái gì |
+|---|---|---|
+| `n` — chỉ 1 người | OSD báo có chồng tiếng nhưng thật ra không | Lỗi **phát hiện overlap** |
+| `l` — lẫn 2 giọng | Một dòng chứa chữ của cả hai người | Lỗi **tách nguồn** |
+| `0` — không nghe ra | Có hai người nhưng tai không tách được ai là ai | **Trần của bài toán** |
+| bỏ trống | Chưa gán | Chưa có dữ liệu |
+
+Cả ba đều **không** bị tính là model sai — chúng được đếm riêng, vì mỗi cái chỉ về
+một khâu khác nhau. Dùng `l` dè dặt: chỉ khi không tên nào đúng cho cả dòng. Còn
+"phần lớn dòng này là giọng X" thì cứ gán X. Đoán bừa cho đủ mới làm hỏng bộ nhãn.
+
+### 10.3 Chấm điểm gán người nói trong vùng overlap
+
+```bash
+python3 deploy/overlap_eval.py result.json --labels voxlane-labels-<job_id>.json
+python3 deploy/overlap_eval.py before.json after.json --labels labels.json
+```
+
+Công cụ luôn trả **bộ ba** — đúng · nhầm · `Unknown` — chứ không bao giờ một con
+số. Lý do: đổi `Unknown` trung thực lấy một cái tên sai tự tin sẽ làm "số segment
+có tên" đẹp lên trong khi sản phẩm tệ đi. Ở chế độ so sánh, nó chỉ báo **CẢI
+THIỆN** khi *đúng tăng* **và** *nhầm không tăng*.
+
+Session speaker ID sinh ngẫu nhiên mỗi lần chạy, nên công cụ ánh xạ ID dự đoán
+sang nhãn bằng Hungarian một-một trước khi chấm. Ánh xạ một-một nghĩa là một
+người bị tách làm hai session speaker vẫn bị tính sai.
+
+### 10.4 Thử cửa sổ embedding rộng hơn (chưa nghiệm thu)
+
+Mặc định pipeline chỉ embed đúng lõi vùng overlap, nên vùng ngắn hơn 1500 ms
+không sinh được embedding nào và chỉ có thể ra `Unknown`. Đặt
+`source_linking.embedding_window: padded` để embed cả cửa sổ đã tách
+(`vùng ± audio.overlap_context_seconds`) — audio đó separator đã tạo sẵn.
+
+```yaml
+# calibration-overlay.yaml, trỏ tới bằng SASTT_LINKING_THRESHOLDS
+source_linking:
+  accept_threshold: 0.55
+  ambiguous_margin: 0.10
+  embedding_window: padded
+```
+
+**Chưa được nghiệm thu trên dữ liệu có nhãn.** Phần đệm nằm ở vùng không chồng
+tiếng; nếu separator để lọt một giọng vào cả hai nguồn thì embedding bị nhiễm
+chéo và pipeline sẽ gán tên sai một cách tự tin. Đo bằng §10.3 trước khi bật cho
+bất kỳ việc gì thật.
 
 ## 11. Quan sát và xử lý lỗi
 

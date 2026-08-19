@@ -71,6 +71,11 @@ source_linking:
   # unknown | diarization_constrained. See config.py: the second path is not
   # validated against labelled overlap audio and is off by default.
   short_source_policy: unknown
+  # owned | padded. `padded` embeds the whole separated window instead of just
+  # the overlap region, so short regions can produce an embedding at all. Not
+  # validated against labelled audio; clearing the floor is not evidence of a
+  # correct link.
+  embedding_window: owned
 
 voice_id:
   enabled: true

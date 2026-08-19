@@ -23,6 +23,7 @@ import io
 import os
 import re
 import struct
+import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -235,7 +236,12 @@ class AppState:
     identity_metadata: dict[tuple[str, str], dict[str, str | None]] = field(default_factory=dict)
     results: dict[str, OfflineResult] = field(default_factory=dict)
     job_scenarios: dict[str, str] = field(default_factory=dict)
-    job_audio_keys: dict[str, str] = field(default_factory=dict)
+    #: ``job_id -> (tenant_id, object key)`` for the retained input audio. The
+    #: tenant travels with the key because eviction happens outside the request
+    #: that stored it, and an object must never be deleted under another tenant.
+    job_audio_keys: dict[str, tuple[str, str]] = field(default_factory=dict)
+    #: ``job_id -> playback re-encode``. Derived data, cached, evicted with its input.
+    job_audio_previews: dict[str, bytes] = field(default_factory=dict)
     job_languages: dict[str, str | None] = field(default_factory=dict)
     sessions: dict[str, StreamingSession] = field(default_factory=dict)
     metrics: MetricsSink = field(default_factory=PrometheusMetrics)
@@ -265,6 +271,109 @@ def scenario_wav(scenario: Scenario) -> bytes:
     header += b"data" + struct.pack("<I", len(pcm))
     wav: bytes = header + pcm
     return wav
+
+
+# --------------------------------------------------------------------------- #
+# Input audio retained for playback (development console aid)
+# --------------------------------------------------------------------------- #
+
+#: How many job inputs the *in-memory* object store keeps so the console can play
+#: a segment back. Matches the console's own history depth, so every job still
+#: listed is still playable. Raw audio is biometric data (spec 10.3, 14.4): a
+#: real deployment keeps it in object storage under a retention policy, not in
+#: the API process, so this bound only guards development RAM. Nothing evicts
+#: objects from a real ``ObjectStore`` — the worker still has to read them.
+MAX_RETAINED_JOB_AUDIO = 12
+
+#: Playback-only re-encode of the input, for listening back over a slow link.
+#:
+#: Mono 16 kHz is what the pipeline itself works in, so nothing a labeller needs
+#: to hear is lost; a 20-minute upload goes from ~15 MB to ~3.4 MB. Measured on
+#: real audio: the re-encode stays time-aligned with the original to 0.0 ms
+#: (cross-correlation peak 0.996), so seeking to a segment still lands on it.
+#: ``compression_level 0`` is deliberate — it costs ~3 s instead of ~24 s for the
+#: same size, and the difference never reaches a transcript.
+AUDIO_PREVIEW_ARGS: tuple[str, ...] = (
+    "-vn",
+    "-ac",
+    "1",
+    "-ar",
+    "16000",
+    "-c:a",
+    "libopus",
+    "-b:a",
+    "24k",
+    "-compression_level",
+    "0",
+    "-f",
+    "ogg",
+)
+AUDIO_PREVIEW_MEDIA_TYPE = "audio/ogg"
+
+#: Container signatures of spec 1.1, longest prefix first.
+_AUDIO_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"RIFF", "audio/wav"),
+    (b"fLaC", "audio/flac"),
+    (b"OggS", "audio/ogg"),
+    (b"ID3", "audio/mpeg"),
+)
+
+
+def job_audio_key(job_id: str) -> str:
+    """Where a job's input audio lives. Derivable, so a restart can still find it."""
+    return f"jobs/{job_id}/input"
+
+
+def audio_media_type(payload: bytes) -> str:
+    """Sniff the container so the browser gets a type it can decode.
+
+    The upload arrives as opaque bytes — the API never asked for a filename — so
+    the byte signature is the only honest source. An unrecognised container is
+    reported as such rather than mislabelled as WAV.
+    """
+    for signature, media_type in _AUDIO_SIGNATURES:
+        if payload.startswith(signature):
+            return media_type
+    if payload[4:8] == b"ftyp":
+        return "audio/mp4"
+    if payload[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2", b"\xff\xe3"):
+        return "audio/mpeg"
+    return "application/octet-stream"
+
+
+def build_audio_preview(payload: bytes) -> bytes | None:
+    """Re-encode the input for listening back, or ``None`` if ffmpeg cannot.
+
+    Returning ``None`` rather than raising keeps playback working on a build
+    without libopus: the endpoint falls back to the exact bytes, which is slower
+    over a tunnel but never wrong.
+    """
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argument list, no shell
+            ["ffmpeg", "-v", "error", "-i", "pipe:0", *AUDIO_PREVIEW_ARGS, "pipe:1"],
+            input=payload,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    return proc.stdout if proc.returncode == 0 and proc.stdout else None
+
+
+def _retain_job_audio(state: AppState, tenant_id: str, job_id: str, audio: bytes) -> str:
+    """Store the input so ``GET /v1/jobs/{id}/audio`` can serve it back."""
+    key = job_audio_key(job_id)
+    state.objects.put(tenant_id, key, audio)
+    state.job_audio_keys[job_id] = (tenant_id, key)
+    if isinstance(state.objects, InMemoryObjectStore):
+        while len(state.job_audio_keys) > MAX_RETAINED_JOB_AUDIO:
+            evicted_job, (evicted_tenant, evicted_key) = next(iter(state.job_audio_keys.items()))
+            del state.job_audio_keys[evicted_job]
+            state.objects.delete(evicted_tenant, evicted_key)
+    # A preview is derived data: it must never outlive the input it came from.
+    for stale in [job for job in state.job_audio_previews if job not in state.job_audio_keys]:
+        del state.job_audio_previews[stale]
+    return key
 
 
 # --------------------------------------------------------------------------- #
@@ -464,11 +573,13 @@ def create_app(
         if created:
             state.job_scenarios[job.job_id] = str(scenario_name or "upload")
             state.job_languages[job.job_id] = requested_language
+            # The queue runner has always stored the input because the worker
+            # reads it. The in-process runner stores it too, so the console can
+            # play a segment back against the audio it was cut from.
+            audio_key = _retain_job_audio(state, tenant_id, job.job_id, audio)
             if state.task_queue is None:
                 _run_job(state, job, scenario, audio, tenant_id, job_config)
             else:
-                audio_key = f"jobs/{job.job_id}/input"
-                state.objects.put(tenant_id, audio_key, audio)
                 try:
                     state.task_queue.enqueue(
                         QUEUE_SPEAKER_BATCH,
@@ -482,9 +593,9 @@ def create_app(
                     )
                 except SasttError:
                     state.objects.delete(tenant_id, audio_key)
+                    state.job_audio_keys.pop(job.job_id, None)
                     state.jobs.update_state(tenant_id, job.job_id, JobState.CANCELLED)
                     raise
-                state.job_audio_keys[job.job_id] = audio_key
         return _job_view(state, job, created)
 
     @app.get("/v1/jobs/{job_id}")
@@ -543,6 +654,52 @@ def create_app(
             "text": render_transcript(result.segments),
         }
 
+    @app.get("/v1/jobs/{job_id}/audio")
+    async def get_job_audio(
+        job_id: str,
+        request: Request,
+        preview: bool = False,
+        tenant_id: str = Depends(dev_tenant),
+    ) -> Response:
+        """Serve the job's input audio so a segment can be listened back.
+
+        This is the audio the transcript was cut from, never a derived or
+        separated source: a separated source is a model artefact and playing one
+        back as if it were the recording would misrepresent what the pipeline
+        did. Retention is bounded (:data:`MAX_RETAINED_JOB_AUDIO`) and a deleted
+        job takes its audio with it, so a missing object is a normal 404.
+
+        ``?preview=1`` serves a mono 16 kHz re-encode instead — same recording,
+        same timeline, a fraction of the bytes, so a console reached over a
+        tunnel can still play a segment. Without the flag the response is the
+        input byte for byte.
+        """
+        state: AppState = request.app.state.sastt
+        job = state.jobs.get(tenant_id, job_id)
+        _, key = state.job_audio_keys.get(job.job_id, (tenant_id, job_audio_key(job.job_id)))
+        try:
+            payload = state.objects.get(tenant_id, key)
+        except (SasttError, KeyError) as exc:
+            raise HTTPException(
+                status_code=404, detail="input audio is no longer retained for this job"
+            ) from exc
+        headers = {
+            "Content-Disposition": f'inline; filename="{job.job_id}"',
+            # Biometric data: never let a shared cache keep a copy (spec 14.4).
+            "Cache-Control": "private, no-store",
+        }
+        if preview:
+            encoded = state.job_audio_previews.get(job.job_id)
+            if encoded is None:
+                encoded = build_audio_preview(payload)
+                if encoded is not None:
+                    state.job_audio_previews[job.job_id] = encoded
+            if encoded is not None:
+                return Response(
+                    content=encoded, media_type=AUDIO_PREVIEW_MEDIA_TYPE, headers=headers
+                )
+        return Response(content=payload, media_type=audio_media_type(payload), headers=headers)
+
     @app.delete("/v1/jobs/{job_id}", status_code=202)
     async def delete_job(
         job_id: str, request: Request, tenant_id: str = Depends(dev_tenant)
@@ -550,9 +707,10 @@ def create_app(
         state: AppState = request.app.state.sastt
         job = state.jobs.get(tenant_id, job_id)
         state.results.pop(job.job_id, None)
-        audio_key = state.job_audio_keys.pop(job.job_id, None)
-        if audio_key:
-            state.objects.delete(tenant_id, audio_key)
+        retained = state.job_audio_keys.pop(job.job_id, None)
+        state.job_audio_previews.pop(job.job_id, None)
+        if retained:
+            state.objects.delete(*retained)
         if not job.is_terminal:
             job = state.jobs.update_state(tenant_id, job.job_id, JobState.CANCELLED)
         return {"job_id": job.job_id, "state": job.state.value}
@@ -701,7 +859,13 @@ def create_app(
         page = WEB_DIR / "index.html"
         if not page.exists():  # pragma: no cover - only when web/ is removed
             raise HTTPException(status_code=404, detail="web/index.html is missing")
-        return FileResponse(page)
+        # The console is a single file with its script inline, and it has no
+        # build step or content hash in its URL. Without an explicit directive a
+        # browser applies heuristic freshness and serves a stale console after
+        # the file changes — which reads as "the change did not deploy".
+        # ``no-cache`` still revalidates against the ETag, so an unchanged file
+        # costs a 304, not a re-download.
+        return FileResponse(page, headers={"Cache-Control": "no-cache"})
 
     return app
 
